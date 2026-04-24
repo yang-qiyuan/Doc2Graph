@@ -3,6 +3,7 @@ package graph
 import (
 	"math"
 	"slices"
+	"strings"
 
 	"doc2graph/backend/internal/domain"
 )
@@ -11,6 +12,7 @@ type displayTransform struct {
 	entityByID       map[string]domain.Entity
 	degreeByEntityID map[string]int
 	relationsByID    map[string]domain.Relation
+	docTitleByID     map[string]string
 }
 
 func buildDisplayGraph(result domain.ExtractionResult, expandMetadata bool) domain.GraphResponse {
@@ -25,6 +27,10 @@ func newDisplayTransform(result domain.ExtractionResult) displayTransform {
 	entityByID := make(map[string]domain.Entity, len(result.Entities))
 	degreeByEntityID := make(map[string]int, len(result.Entities))
 	relationsByID := make(map[string]domain.Relation, len(result.Relations))
+	docTitleByID := make(map[string]string, len(result.Documents))
+	for _, document := range result.Documents {
+		docTitleByID[document.ID] = document.Title
+	}
 	for _, entity := range result.Entities {
 		entityByID[entity.ID] = entity
 	}
@@ -37,6 +43,7 @@ func newDisplayTransform(result domain.ExtractionResult) displayTransform {
 		entityByID:       entityByID,
 		degreeByEntityID: degreeByEntityID,
 		relationsByID:    relationsByID,
+		docTitleByID:     docTitleByID,
 	}
 }
 
@@ -162,11 +169,13 @@ func (t displayTransform) decorateRelation(
 }
 
 func (t displayTransform) shouldHideEntity(entity domain.Entity) (bool, string) {
-	if entity.Type == "Person" {
+	if t.isPrimaryEntity(entity) {
 		return false, ""
 	}
 
 	switch entity.Type {
+	case "Person":
+		return true, "secondary_person_leaf"
 	case "Time":
 		return true, "metadata_time_leaf"
 	case "Place":
@@ -178,6 +187,18 @@ func (t displayTransform) shouldHideEntity(entity domain.Entity) (bool, string) 
 	}
 
 	return false, ""
+}
+
+func (t displayTransform) isPrimaryEntity(entity domain.Entity) bool {
+	if entity.Type != "Person" {
+		return false
+	}
+	title := t.docTitleByID[entity.SourceDoc]
+	return normalizeGraphLabel(title) == normalizeGraphLabel(entity.Name)
+}
+
+func normalizeGraphLabel(value string) string {
+	return strings.Join(strings.Fields(strings.ToLower(value)), " ")
 }
 
 func (t displayTransform) onlyMetadataPredicates(entityID string, allowed []string) bool {

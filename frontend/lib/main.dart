@@ -136,6 +136,7 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
         entity.id,
       );
       setState(() {
+        _expandedEntityDetails.clear();
         _selectedEntity = detailedEntity;
         _expandedEntityDetails[entity.id] = detailedEntity;
       });
@@ -239,7 +240,7 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
 
     final relationById = <String, RelationModel>{};
     final majorIds = graph.entities
-        .where((entity) => isMajorGraphEntity(entity))
+        .where((entity) => isMajorGraphEntity(entity, graph.documents))
         .map((entity) => entity.id)
         .toSet();
 
@@ -263,7 +264,7 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
 
     final entityById = <String, EntityModel>{};
     for (final entity in graph.entities) {
-      if (isMajorGraphEntity(entity)) {
+      if (isMajorGraphEntity(entity, graph.documents)) {
         entityById[entity.id] = entity;
       }
     }
@@ -2184,8 +2185,19 @@ Color entityTypeColor(String type) {
   }
 }
 
-bool isMajorGraphEntity(EntityModel entity) {
-  return entity.type == 'Person';
+bool isMajorGraphEntity(EntityModel entity, List<DocumentModel> documents) {
+  if (entity.type != 'Person') {
+    return false;
+  }
+  return documents.any(
+    (document) =>
+        document.id == entity.sourceDoc &&
+        normalizeGraphLabel(document.title) == normalizeGraphLabel(entity.name),
+  );
+}
+
+String normalizeGraphLabel(String value) {
+  return value.toLowerCase().trim().replaceAll(RegExp(r'\s+'), ' ');
 }
 
 Color predicateColor(String predicate) {

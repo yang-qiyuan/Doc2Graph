@@ -12,7 +12,7 @@ func TestBuildDisplayGraphCollapsedAddsSummaryNodes(t *testing.T) {
 	graph := buildDisplayGraph(result, false)
 
 	if len(graph.Entities) != 2 {
-		t.Fatalf("expected 2 visible major entities, got %d", len(graph.Entities))
+		t.Fatalf("expected 2 visible primary entities, got %d", len(graph.Entities))
 	}
 	if len(graph.Relations) != 0 {
 		t.Fatalf("expected 0 visible relations after collapsing minor leaves, got %d", len(graph.Relations))
@@ -33,9 +33,42 @@ func TestBuildDisplayGraphCollapsedAddsSummaryNodes(t *testing.T) {
 		if entity.Display == nil {
 			t.Fatalf("expected display metadata for entity %s", entity.ID)
 		}
-		if entity.Type != "Person" {
-			t.Fatalf("expected only person entities in collapsed graph, got %s", entity.Type)
+		if !newDisplayTransform(result).isPrimaryEntity(entity) {
+			t.Fatalf("expected only primary document entities in collapsed graph, got %s", entity.Name)
 		}
+	}
+}
+
+func TestBuildDisplayGraphCollapsedHidesSecondaryPeople(t *testing.T) {
+	result := testExtractionResult()
+	result.Entities = append(result.Entities, domain.Entity{
+		ID:        "P3",
+		Name:      "Morehouse College",
+		Type:      "Person",
+		SourceDoc: "doc-1",
+		Mentions:  []domain.Mention{{DocID: "doc-1", CharStart: 80, CharEnd: 97}},
+	})
+	result.Relations = append(result.Relations, domain.Relation{
+		ID:         "R5",
+		Subject:    "P1",
+		Predicate:  "family_of",
+		Object:     "P3",
+		Evidence:   "Morehouse College",
+		SourceDoc:  "doc-1",
+		CharStart:  80,
+		CharEnd:    97,
+		Confidence: 0.5,
+	})
+
+	graph := buildDisplayGraph(result, false)
+
+	for _, entity := range graph.Entities {
+		if entity.ID == "P3" {
+			t.Fatal("expected secondary person entity to be hidden in collapsed graph")
+		}
+	}
+	if graph.Display.HiddenEntityCount != 5 {
+		t.Fatalf("expected 5 hidden entities, got %d", graph.Display.HiddenEntityCount)
 	}
 }
 
