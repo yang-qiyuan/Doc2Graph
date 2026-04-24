@@ -53,6 +53,7 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
   late final ValueNotifier<RelationModel?> _hoveredRelation;
   double _minConfidence = 0.0;
   String _predicateFilter = 'all';
+  bool _expandMetadata = false;
 
   @override
   void initState() {
@@ -83,7 +84,11 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
     try {
       final baseUrl = _normalizedBaseUrl;
       final job = await _api.createWikipediaFixtureJob(baseUrl);
-      final graph = await _api.fetchGraph(baseUrl, job.job.id);
+      final graph = await _api.fetchGraph(
+        baseUrl,
+        job.job.id,
+        expandMetadata: _expandMetadata,
+      );
       setState(() {
         _job = job;
         _graph = graph;
@@ -101,8 +106,55 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
     }
   }
 
+  Future<void> _reloadGraph({required bool expandMetadata}) async {
+    if (_job == null) {
+      setState(() {
+        _expandMetadata = expandMetadata;
+      });
+      return;
+    }
+
+    setState(() {
+      _isLoading = true;
+      _error = null;
+      _expandMetadata = expandMetadata;
+      _selectedEntity = null;
+      _selectedEvidence = null;
+    });
+    _hoveredEntity.value = null;
+    _hoveredRelation.value = null;
+
+    try {
+      final graph = await _api.fetchGraph(
+        _normalizedBaseUrl,
+        _job!.job.id,
+        expandMetadata: expandMetadata,
+      );
+      setState(() {
+        _graph = graph;
+      });
+    } catch (error) {
+      setState(() {
+        _error = error.toString();
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
+    }
+  }
+
   Future<void> _selectEntity(EntityModel entity) async {
     if (_job == null) {
+      return;
+    }
+    if (entity.display?.role == 'summary') {
+      setState(() {
+        _selectedEntity = entity;
+        _selectedEvidence = null;
+      });
       return;
     }
 
@@ -136,6 +188,9 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
 
   Future<void> _selectRelation(RelationModel relation) async {
     if (_job == null) {
+      return;
+    }
+    if (relation.display?.aggregated == true) {
       return;
     }
 
@@ -245,6 +300,7 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
             minConfidence: _minConfidence,
             predicateFilter: _predicateFilter,
             availablePredicates: _availablePredicates,
+            expandMetadata: _expandMetadata,
             onMinConfidenceChanged: (value) {
               setState(() {
                 _minConfidence = value;
@@ -254,6 +310,9 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
               setState(() {
                 _predicateFilter = value;
               });
+            },
+            onExpandMetadataChanged: (value) {
+              _reloadGraph(expandMetadata: value);
             },
             onRunWikipediaFixtures: _runWikipediaFixtures,
             onSelectEntity: _selectEntity,
@@ -319,8 +378,10 @@ class _MainPanel extends StatelessWidget {
     required this.minConfidence,
     required this.predicateFilter,
     required this.availablePredicates,
+    required this.expandMetadata,
     required this.onMinConfidenceChanged,
     required this.onPredicateFilterChanged,
+    required this.onExpandMetadataChanged,
     required this.onRunWikipediaFixtures,
     required this.onSelectEntity,
     required this.onSelectRelation,
@@ -337,8 +398,10 @@ class _MainPanel extends StatelessWidget {
   final double minConfidence;
   final String predicateFilter;
   final List<String> availablePredicates;
+  final bool expandMetadata;
   final ValueChanged<double> onMinConfidenceChanged;
   final ValueChanged<String> onPredicateFilterChanged;
+  final ValueChanged<bool> onExpandMetadataChanged;
   final Future<void> Function() onRunWikipediaFixtures;
   final ValueChanged<EntityModel> onSelectEntity;
   final ValueChanged<RelationModel> onSelectRelation;
@@ -409,6 +472,7 @@ class _MainPanel extends StatelessWidget {
             job: job!,
             entities: filteredEntities.length,
             relations: filteredRelations.length,
+            display: graph?.display,
           ),
         ],
         if (graph != null) ...[
@@ -423,8 +487,10 @@ class _MainPanel extends StatelessWidget {
                   minConfidence: minConfidence,
                   predicateFilter: predicateFilter,
                   availablePredicates: availablePredicates,
+                  expandMetadata: expandMetadata,
                   onMinConfidenceChanged: onMinConfidenceChanged,
                   onPredicateFilterChanged: onPredicateFilterChanged,
+                  onExpandMetadataChanged: onExpandMetadataChanged,
                 ),
                 const SizedBox(height: 16),
                 _GraphCanvas(
@@ -503,11 +569,13 @@ class _JobSummary extends StatelessWidget {
     required this.job,
     required this.entities,
     required this.relations,
+    this.display,
   });
 
   final JobResponse job;
   final int entities;
   final int relations;
+  final GraphDisplayModel? display;
 
   @override
   Widget build(BuildContext context) {
@@ -523,6 +591,26 @@ class _JobSummary extends StatelessWidget {
             _Metric(label: 'Documents', value: '${job.documents.length}'),
             _Metric(label: 'Visible Nodes', value: '$entities'),
             _Metric(label: 'Visible Edges', value: '$relations'),
+            if (display != null && display!.transformed)
+              _Metric(
+                label: 'Hidden Nodes',
+                value: '${display!.hiddenEntityCount}',
+              ),
+            if (display != null && display!.transformed)
+              _Metric(
+                label: 'Hidden Edges',
+                value: '${display!.hiddenRelationCount}',
+              ),
+            if (display != null && display!.summaryNodeCount > 0)
+              _Metric(
+                label: 'Summary Nodes',
+                value: '${display!.summaryNodeCount}',
+              ),
+            if (display != null)
+              _Metric(
+                label: 'Metadata View',
+                value: display!.metadataExpanded ? 'Expanded' : 'Grouped',
+              ),
           ],
         ),
       ),
@@ -589,15 +677,19 @@ class _GraphFilters extends StatelessWidget {
     required this.minConfidence,
     required this.predicateFilter,
     required this.availablePredicates,
+    required this.expandMetadata,
     required this.onMinConfidenceChanged,
     required this.onPredicateFilterChanged,
+    required this.onExpandMetadataChanged,
   });
 
   final double minConfidence;
   final String predicateFilter;
   final List<String> availablePredicates;
+  final bool expandMetadata;
   final ValueChanged<double> onMinConfidenceChanged;
   final ValueChanged<String> onPredicateFilterChanged;
+  final ValueChanged<bool> onExpandMetadataChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -644,6 +736,16 @@ class _GraphFilters extends StatelessWidget {
                 onPredicateFilterChanged(value);
               }
             },
+          ),
+        ),
+        SizedBox(
+          width: 260,
+          child: SwitchListTile(
+            value: expandMetadata,
+            contentPadding: EdgeInsets.zero,
+            title: const Text('Expand metadata'),
+            subtitle: const Text('Show grouped leaves directly'),
+            onChanged: onExpandMetadataChanged,
           ),
         ),
       ],
@@ -916,13 +1018,15 @@ class _GraphCanvasState extends State<_GraphCanvas> {
                                 if (node == null) {
                                   return;
                                 }
-                                final connectedIds = layout.getConnectedNodeIds(node.entity.id);
+                                final connectedIds =
+                                    layout.getConnectedNodeIds(node.entity.id);
                                 final connectedOffsets = <String, Offset>{};
                                 for (final connectedId in connectedIds) {
                                   final connectedNode = layout.nodes.firstWhere(
                                     (n) => n.entity.id == connectedId,
                                   );
-                                  connectedOffsets[connectedId] = connectedNode.center - node.center;
+                                  connectedOffsets[connectedId] =
+                                      connectedNode.center - node.center;
                                 }
                                 setState(() {
                                   _draggingNodeId = node.entity.id;
@@ -943,7 +1047,8 @@ class _GraphCanvasState extends State<_GraphCanvas> {
                                 final target =
                                     event.localPosition - _dragOffset!;
                                 setState(() {
-                                  _cachedLayout = _cachedLayout!.moveNodeWithConnected(
+                                  _cachedLayout =
+                                      _cachedLayout!.moveNodeWithConnected(
                                     _draggingNodeId!,
                                     target,
                                     _connectedNodeOffsets,
@@ -988,7 +1093,8 @@ class _GraphCanvasState extends State<_GraphCanvas> {
                                     return;
                                   }
                                   final pos = event.localPosition;
-                                  if (pos.dx < 0 || pos.dy < 0 ||
+                                  if (pos.dx < 0 ||
+                                      pos.dy < 0 ||
                                       pos.dx > layout.canvasSize.width ||
                                       pos.dy > layout.canvasSize.height) {
                                     widget.onHover();
@@ -1019,12 +1125,29 @@ class _GraphCanvasState extends State<_GraphCanvas> {
                                     final tappedNode =
                                         layout.nodeAt(details.localPosition);
                                     if (tappedNode != null) {
+                                      if (tappedNode.entity.display?.role ==
+                                          'summary') {
+                                        widget.onHover(
+                                            entity: tappedNode.entity);
+                                        return;
+                                      }
                                       widget.onSelectEntity(tappedNode.entity);
                                       return;
                                     }
                                     final tappedEdge =
                                         layout.edgeAt(details.localPosition);
                                     if (tappedEdge != null) {
+                                      if (tappedEdge
+                                              .relation.display?.aggregated ==
+                                          true) {
+                                        setState(() {
+                                          _activeRelation = tappedEdge.relation;
+                                        });
+                                        widget.onHover(
+                                          relation: tappedEdge.relation,
+                                        );
+                                        return;
+                                      }
                                       setState(() {
                                         _activeRelation = tappedEdge.relation;
                                       });
@@ -1133,6 +1256,32 @@ class _EntityPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (entity.display?.role == 'summary') {
+      return Card(
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Grouped Metadata',
+                  style: Theme.of(context).textTheme.titleLarge),
+              const SizedBox(height: 12),
+              Text(entity.name,
+                  style: Theme.of(context).textTheme.headlineSmall),
+              const SizedBox(height: 8),
+              Text('Group kind: ${entity.display?.groupKind ?? 'metadata'}'),
+              Text(
+                'Contains ${entity.display?.memberRelationIds.length ?? 0} hidden relations',
+              ),
+              const SizedBox(height: 12),
+              const Text(
+                'Use the Expand metadata toggle above the graph to reveal the underlying leaves.',
+              ),
+            ],
+          ),
+        ),
+      );
+    }
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(20),
@@ -1171,6 +1320,26 @@ class _HoverEntityPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (entity.display?.role == 'summary') {
+      return Card(
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Hovered Node',
+                  style: Theme.of(context).textTheme.titleLarge),
+              const SizedBox(height: 12),
+              Text(entity.name, style: Theme.of(context).textTheme.titleMedium),
+              const SizedBox(height: 8),
+              Text(
+                'Grouped ${entity.display?.groupKind ?? 'metadata'} • ${entity.display?.memberRelationIds.length ?? 0} hidden facts',
+              ),
+            ],
+          ),
+        ),
+      );
+    }
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(20),
@@ -1198,6 +1367,33 @@ class _HoverRelationPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (relation.display?.aggregated == true) {
+      return Card(
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Hovered Edge',
+                  style: Theme.of(context).textTheme.titleLarge),
+              const SizedBox(height: 12),
+              Text(
+                relation.predicate,
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Aggregates ${relation.display?.memberRelationIds.length ?? 0} hidden relations.',
+              ),
+              const SizedBox(height: 12),
+              const Text(
+                'Use the Expand metadata toggle to reveal the underlying evidence-bearing edges.',
+              ),
+            ],
+          ),
+        ),
+      );
+    }
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(20),
@@ -1478,13 +1674,14 @@ class GraphLayout {
           ..sort(
             (a, b) => a.name.compareTo(b.name),
           );
+    final personOvalRadiusX = 110.0 + (personEntities.length * 6.0);
+    final personOvalRadiusY = 72.0 + (personEntities.length * 3.8);
 
     for (var i = 0; i < personEntities.length; i++) {
       final angle = (2 * math.pi * i) / math.max(1, personEntities.length);
-      final radius = 80.0 + (personEntities.length * 4.0);
       positions[personEntities[i].id] = Offset(
-        center.dx + math.cos(angle) * radius,
-        center.dy + math.sin(angle) * radius,
+        center.dx + math.cos(angle) * personOvalRadiusX,
+        center.dy + math.sin(angle) * personOvalRadiusY,
       );
       velocities[personEntities[i].id] = Offset.zero;
     }
@@ -1497,6 +1694,7 @@ class GraphLayout {
         'Place' => 220.0,
         'Organization' => 210.0,
         'Work' => 230.0,
+        'MetaGroup' => 170.0,
         _ => 235.0,
       };
       positions[entity.id] = Offset(
@@ -1550,6 +1748,7 @@ class GraphLayout {
         final distance = math.max(1.0, toCenter.distance);
         final preferredRadius = switch (entity.type) {
           'Person' => 65.0 + ((degree[entity.id] ?? 0) * 6.0),
+          'MetaGroup' => 135.0,
           'Place' => 170.0,
           'Organization' => 185.0,
           'Work' => 210.0,
@@ -1557,19 +1756,31 @@ class GraphLayout {
           _ => 220.0,
         };
         final radialError = distance - preferredRadius;
-        final radialPull = radialError * 0.0038;
-        final centerForce = Offset(
-          (toCenter.dx / distance) * radialPull,
-          (toCenter.dy / distance) * radialPull,
+        var centerForce = Offset(
+          (toCenter.dx / distance) * (radialError * 0.0038),
+          (toCenter.dy / distance) * (radialError * 0.0038),
         );
         forces[entity.id] = forces[entity.id]! + centerForce;
 
         if (entity.type == 'Person') {
-          forces[entity.id] = forces[entity.id]! +
-              Offset(
-                (center.dx - current.dx) * 0.0015,
-                (center.dy - current.dy) * 0.0015,
-              );
+          final dx = current.dx - center.dx;
+          final dy = current.dy - center.dy;
+          final ellipseDistance = math.sqrt(
+            ((dx * dx) / (personOvalRadiusX * personOvalRadiusX)) +
+                ((dy * dy) / (personOvalRadiusY * personOvalRadiusY)),
+          );
+          final normalizedDx = dx / math.max(personOvalRadiusX, 1);
+          final normalizedDy = dy / math.max(personOvalRadiusY, 1);
+          final normalizedLength = math.max(
+              0.001,
+              math.sqrt((normalizedDx * normalizedDx) +
+                  (normalizedDy * normalizedDy)));
+          final ellipsePull = (ellipseDistance - 1.0) * 8.5;
+          centerForce = Offset(
+            -(normalizedDx / normalizedLength) * ellipsePull,
+            -(normalizedDy / normalizedLength) * ellipsePull,
+          );
+          forces[entity.id] = forces[entity.id]! + centerForce;
         }
       }
 
@@ -1594,8 +1805,12 @@ class GraphLayout {
         GraphNode(
           entity: entity,
           center: positions[entity.id]!,
-          radius: entity.type == 'Person' ? 28 : 14,
-          showLabel: entity.type == 'Person',
+          radius: switch (entity.type) {
+            'Person' => 28,
+            'MetaGroup' => 22,
+            _ => 14,
+          },
+          showLabel: entity.type == 'Person' || entity.type == 'MetaGroup',
         ),
       );
     }
@@ -1713,12 +1928,15 @@ class GraphLayout {
       final relativeOffset = entry.value;
       final connectedNode = nodes.firstWhere(
         (item) => item.entity.id == connectedId,
-        orElse: () => throw StateError('connected node not found: $connectedId'),
+        orElse: () =>
+            throw StateError('connected node not found: $connectedId'),
       );
       final newCenter = clampedCenter + relativeOffset;
       final clampedConnectedCenter = Offset(
-        newCenter.dx.clamp(connectedNode.radius + 8, canvasSize.width - connectedNode.radius - 8),
-        newCenter.dy.clamp(connectedNode.radius + 8, canvasSize.height - connectedNode.radius - 8),
+        newCenter.dx.clamp(connectedNode.radius + 8,
+            canvasSize.width - connectedNode.radius - 8),
+        newCenter.dy.clamp(connectedNode.radius + 8,
+            canvasSize.height - connectedNode.radius - 8),
       );
       newPositions[connectedId] = clampedConnectedCenter;
     }
@@ -1816,6 +2034,8 @@ Color entityTypeColor(String type) {
       return const Color(0xFFD6E4F0);
     case 'Work':
       return const Color(0xFFE7D8F3);
+    case 'MetaGroup':
+      return const Color(0xFFD8DDD2);
     default:
       return const Color(0xFFE4E0D7);
   }
@@ -1870,9 +2090,16 @@ class Doc2GraphApi {
     return _decodeResponse(response, JobResponse.fromJson);
   }
 
-  Future<GraphData> fetchGraph(String baseUrl, String jobId) async {
-    final response =
-        await http.get(Uri.parse('$baseUrl/api/v1/graph?job_id=$jobId'));
+  Future<GraphData> fetchGraph(
+    String baseUrl,
+    String jobId, {
+    required bool expandMetadata,
+  }) async {
+    final response = await http.get(
+      Uri.parse(
+        '$baseUrl/api/v1/graph?job_id=$jobId&expand_metadata=${expandMetadata ? 'true' : 'false'}',
+      ),
+    );
     return _decodeResponse(response, GraphData.fromJson);
   }
 
@@ -1937,11 +2164,13 @@ class GraphData {
     required this.documents,
     required this.entities,
     required this.relations,
+    required this.display,
   });
 
   final List<DocumentModel> documents;
   final List<EntityModel> entities;
   final List<RelationModel> relations;
+  final GraphDisplayModel display;
 
   factory GraphData.fromJson(Map<String, dynamic> json) {
     return GraphData(
@@ -1954,6 +2183,44 @@ class GraphData {
       relations: ((json['relations'] as List<dynamic>? ?? <dynamic>[]))
           .map((item) => RelationModel.fromJson(item as Map<String, dynamic>))
           .toList(),
+      display: GraphDisplayModel.fromJson(
+        json['display'] as Map<String, dynamic>? ?? <String, dynamic>{},
+      ),
+    );
+  }
+}
+
+class GraphDisplayModel {
+  GraphDisplayModel({
+    required this.transformed,
+    required this.metadataExpanded,
+    required this.hiddenEntityCount,
+    required this.hiddenRelationCount,
+    required this.collapsedTimeLeaves,
+    required this.collapsedPlaceLeaves,
+    required this.summaryNodeCount,
+    required this.summaryEdgeCount,
+  });
+
+  final bool transformed;
+  final bool metadataExpanded;
+  final int hiddenEntityCount;
+  final int hiddenRelationCount;
+  final int collapsedTimeLeaves;
+  final int collapsedPlaceLeaves;
+  final int summaryNodeCount;
+  final int summaryEdgeCount;
+
+  factory GraphDisplayModel.fromJson(Map<String, dynamic> json) {
+    return GraphDisplayModel(
+      transformed: json['transformed'] as bool? ?? false,
+      metadataExpanded: json['metadata_expanded'] as bool? ?? false,
+      hiddenEntityCount: json['hidden_entity_count'] as int? ?? 0,
+      hiddenRelationCount: json['hidden_relation_count'] as int? ?? 0,
+      collapsedTimeLeaves: json['collapsed_time_leaves'] as int? ?? 0,
+      collapsedPlaceLeaves: json['collapsed_place_leaves'] as int? ?? 0,
+      summaryNodeCount: json['summary_node_count'] as int? ?? 0,
+      summaryEdgeCount: json['summary_edge_count'] as int? ?? 0,
     );
   }
 }
@@ -2002,6 +2269,7 @@ class EntityModel {
     required this.type,
     required this.sourceDoc,
     required this.mentions,
+    this.display,
   });
 
   final String id;
@@ -2009,6 +2277,7 @@ class EntityModel {
   final String type;
   final String sourceDoc;
   final List<MentionModel> mentions;
+  final EntityDisplayModel? display;
 
   factory EntityModel.fromJson(Map<String, dynamic> json) {
     return EntityModel(
@@ -2019,6 +2288,11 @@ class EntityModel {
       mentions: ((json['mentions'] as List<dynamic>? ?? <dynamic>[]))
           .map((item) => MentionModel.fromJson(item as Map<String, dynamic>))
           .toList(),
+      display: json['display'] == null
+          ? null
+          : EntityDisplayModel.fromJson(
+              json['display'] as Map<String, dynamic>,
+            ),
     );
   }
 }
@@ -2031,6 +2305,7 @@ class RelationModel {
     required this.object,
     required this.sourceDoc,
     required this.confidence,
+    this.display,
   });
 
   final String id;
@@ -2039,6 +2314,7 @@ class RelationModel {
   final String object;
   final String sourceDoc;
   final double confidence;
+  final RelationDisplayModel? display;
 
   factory RelationModel.fromJson(Map<String, dynamic> json) {
     return RelationModel(
@@ -2048,6 +2324,84 @@ class RelationModel {
       object: json['object'] as String? ?? '',
       sourceDoc: json['source_doc'] as String? ?? '',
       confidence: (json['confidence'] as num? ?? 0).toDouble(),
+      display: json['display'] == null
+          ? null
+          : RelationDisplayModel.fromJson(
+              json['display'] as Map<String, dynamic>,
+            ),
+    );
+  }
+}
+
+class EntityDisplayModel {
+  EntityDisplayModel({
+    required this.role,
+    required this.importance,
+    required this.crossDocumentCount,
+    required this.hidden,
+    required this.hiddenReason,
+    required this.groupKind,
+    required this.expandable,
+    required this.memberEntityIds,
+    required this.memberRelationIds,
+  });
+
+  final String role;
+  final double importance;
+  final int crossDocumentCount;
+  final bool hidden;
+  final String hiddenReason;
+  final String groupKind;
+  final bool expandable;
+  final List<String> memberEntityIds;
+  final List<String> memberRelationIds;
+
+  factory EntityDisplayModel.fromJson(Map<String, dynamic> json) {
+    return EntityDisplayModel(
+      role: json['role'] as String? ?? '',
+      importance: (json['importance'] as num? ?? 0).toDouble(),
+      crossDocumentCount: json['cross_document_count'] as int? ?? 0,
+      hidden: json['hidden'] as bool? ?? false,
+      hiddenReason: json['hidden_reason'] as String? ?? '',
+      groupKind: json['group_kind'] as String? ?? '',
+      expandable: json['expandable'] as bool? ?? false,
+      memberEntityIds:
+          ((json['member_entity_ids'] as List<dynamic>? ?? <dynamic>[]))
+              .map((item) => item as String)
+              .toList(),
+      memberRelationIds:
+          ((json['member_relation_ids'] as List<dynamic>? ?? <dynamic>[]))
+              .map((item) => item as String)
+              .toList(),
+    );
+  }
+}
+
+class RelationDisplayModel {
+  RelationDisplayModel({
+    required this.role,
+    required this.hidden,
+    required this.hiddenReason,
+    required this.aggregated,
+    required this.memberRelationIds,
+  });
+
+  final String role;
+  final bool hidden;
+  final String hiddenReason;
+  final bool aggregated;
+  final List<String> memberRelationIds;
+
+  factory RelationDisplayModel.fromJson(Map<String, dynamic> json) {
+    return RelationDisplayModel(
+      role: json['role'] as String? ?? '',
+      hidden: json['hidden'] as bool? ?? false,
+      hiddenReason: json['hidden_reason'] as String? ?? '',
+      aggregated: json['aggregated'] as bool? ?? false,
+      memberRelationIds:
+          ((json['member_relation_ids'] as List<dynamic>? ?? <dynamic>[]))
+              .map((item) => item as String)
+              .toList(),
     );
   }
 }

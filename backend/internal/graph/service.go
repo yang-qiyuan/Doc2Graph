@@ -15,17 +15,13 @@ func NewService(store *store.MemoryStore) *Service {
 	return &Service{store: store}
 }
 
-func (s *Service) GetGraph(jobID string) (domain.GraphResponse, error) {
+func (s *Service) GetGraph(jobID string, expandMetadata bool) (domain.GraphResponse, error) {
 	result, ok := s.store.GetJobResult(jobID)
 	if !ok {
 		return domain.GraphResponse{}, fmt.Errorf("job result not found")
 	}
 
-	return domain.GraphResponse{
-		Documents: result.Documents,
-		Entities:  result.Entities,
-		Relations: result.Relations,
-	}, nil
+	return buildDisplayGraph(result, expandMetadata), nil
 }
 
 func (s *Service) GetEntity(jobID, entityID string) (domain.Entity, error) {

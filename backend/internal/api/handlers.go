@@ -117,7 +117,8 @@ func (a *App) handleGraph(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	graph, err := a.graphService.GetGraph(jobID)
+	expandMetadata := r.URL.Query().Get("expand_metadata") == "true"
+	graph, err := a.graphService.GetGraph(jobID, expandMetadata)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, errorResponse{Error: err.Error()})
 		return

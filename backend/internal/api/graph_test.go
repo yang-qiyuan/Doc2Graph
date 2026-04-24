@@ -93,6 +93,33 @@ func TestGraphEndpointsReturnStoredExtractionData(t *testing.T) {
 		if len(graph.Entities) != 2 || len(graph.Relations) != 1 {
 			t.Fatalf("unexpected graph counts: %d entities, %d relations", len(graph.Entities), len(graph.Relations))
 		}
+		if !graph.Display.Transformed {
+			t.Fatal("expected transformed display graph")
+		}
+		if graph.Display.SummaryNodeCount != 1 {
+			t.Fatalf("expected 1 summary node, got %d", graph.Display.SummaryNodeCount)
+		}
+	})
+
+	t.Run("graph expanded metadata", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/graph?job_id="+created.Job.ID+"&expand_metadata=true", nil)
+		rec := httptest.NewRecorder()
+		app.handleGraph(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected status %d, got %d", http.StatusOK, rec.Code)
+		}
+
+		var graph domain.GraphResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &graph); err != nil {
+			t.Fatalf("unmarshal graph response: %v", err)
+		}
+		if len(graph.Entities) != 2 || len(graph.Relations) != 1 {
+			t.Fatalf("unexpected expanded graph counts: %d entities, %d relations", len(graph.Entities), len(graph.Relations))
+		}
+		if !graph.Display.MetadataExpanded {
+			t.Fatal("expected metadata expanded flag")
+		}
 	})
 
 	t.Run("entity detail", func(t *testing.T) {
