@@ -248,9 +248,25 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
         .map((entity) => entity.id)
         .toSet();
 
+    // Build entity type lookup for performance
+    final entityTypeById = <String, String>{
+      for (final entity in graph.entities) entity.id: entity.type
+    };
+
+    // Show all Person-Person relations (not just major-to-major)
     for (final relation in graph.relations) {
-      if (majorIds.contains(relation.subject) &&
+      final subjectType = entityTypeById[relation.subject] ?? '';
+      final objectType = entityTypeById[relation.object] ?? '';
+
+      // Show if at least one side is a major entity and it's a Person-Person relation
+      if (subjectType == 'Person' && objectType == 'Person') {
+        if (majorIds.contains(relation.subject) ||
+            majorIds.contains(relation.object)) {
+          relationById[relation.id] = relation;
+        }
+      } else if (majorIds.contains(relation.subject) &&
           majorIds.contains(relation.object)) {
+        // For non Person-Person relations, still require both to be major
         relationById[relation.id] = relation;
       }
     }
@@ -266,19 +282,44 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
       return const <EntityModel>[];
     }
 
-    final entityById = <String, EntityModel>{};
+    final entityById = <String, EntityModel>{
+      for (final entity in graph.entities) entity.id: entity
+    };
+
+    final displayEntityIds = <String>{};
+
+    // Always show major entities (document subjects)
     for (final entity in graph.entities) {
       if (isMajorGraphEntity(entity, graph.documents)) {
-        entityById[entity.id] = entity;
+        displayEntityIds.add(entity.id);
       }
     }
+
+    // Also show Person entities that are connected to major entities via displayed relations
+    final displayedRelations = _displayRelations;
+    for (final relation in displayedRelations) {
+      // Add both subject and object entities if they're Person type
+      for (final entityId in [relation.subject, relation.object]) {
+        if (!displayEntityIds.contains(entityId)) {
+          final entity = entityById[entityId];
+          if (entity != null && entity.type == 'Person') {
+            displayEntityIds.add(entityId);
+          }
+        }
+      }
+    }
+
     for (final detail in _expandedEntityDetails.values) {
-      entityById[detail.entity.id] = detail.entity;
+      displayEntityIds.add(detail.entity.id);
       for (final connection in detail.hiddenConnections) {
-        entityById[connection.entity.id] = connection.entity;
+        displayEntityIds.add(connection.entity.id);
       }
     }
-    return entityById.values.toList();
+
+    return displayEntityIds
+        .map((id) => entityById[id]!)
+        .where((entity) => entity.id.isNotEmpty)
+        .toList();
   }
 
   List<RelationModel> get _filteredRelations {
