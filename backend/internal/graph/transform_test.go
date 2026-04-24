@@ -11,45 +11,31 @@ func TestBuildDisplayGraphCollapsedAddsSummaryNodes(t *testing.T) {
 
 	graph := buildDisplayGraph(result, false)
 
-	if len(graph.Entities) != 6 {
-		t.Fatalf("expected 6 visible entities including summaries, got %d", len(graph.Entities))
+	if len(graph.Entities) != 2 {
+		t.Fatalf("expected 2 visible major entities, got %d", len(graph.Entities))
 	}
-	if len(graph.Relations) != 4 {
-		t.Fatalf("expected 4 visible relations including summaries, got %d", len(graph.Relations))
+	if len(graph.Relations) != 0 {
+		t.Fatalf("expected 0 visible relations after collapsing minor leaves, got %d", len(graph.Relations))
 	}
 	if !graph.Display.Transformed || graph.Display.MetadataExpanded {
 		t.Fatal("expected collapsed transformed graph")
 	}
-	if graph.Display.HiddenEntityCount != 3 {
-		t.Fatalf("expected 3 hidden entities, got %d", graph.Display.HiddenEntityCount)
+	if graph.Display.HiddenEntityCount != 4 {
+		t.Fatalf("expected 4 hidden entities, got %d", graph.Display.HiddenEntityCount)
 	}
-	if graph.Display.HiddenRelationCount != 3 {
-		t.Fatalf("expected 3 hidden relations, got %d", graph.Display.HiddenRelationCount)
+	if graph.Display.HiddenRelationCount != 4 {
+		t.Fatalf("expected 4 hidden relations, got %d", graph.Display.HiddenRelationCount)
 	}
-	if graph.Display.SummaryNodeCount != 3 || graph.Display.SummaryEdgeCount != 3 {
-		t.Fatalf("expected 3 summary nodes and edges, got %d and %d", graph.Display.SummaryNodeCount, graph.Display.SummaryEdgeCount)
+	if graph.Display.CollapsedTimeLeaves != 1 || graph.Display.CollapsedPlaceLeaves != 2 || graph.Display.CollapsedOrgLeaves != 1 {
+		t.Fatalf("unexpected collapsed counts: %+v", graph.Display)
 	}
-
-	summaryNodes := 0
-	summaryEdges := 0
 	for _, entity := range graph.Entities {
 		if entity.Display == nil {
 			t.Fatalf("expected display metadata for entity %s", entity.ID)
 		}
-		if entity.Display.Role == "summary" {
-			summaryNodes++
-			if !entity.Display.Expandable {
-				t.Fatalf("expected summary entity %s to be expandable", entity.ID)
-			}
+		if entity.Type != "Person" {
+			t.Fatalf("expected only person entities in collapsed graph, got %s", entity.Type)
 		}
-	}
-	for _, relation := range graph.Relations {
-		if relation.Display != nil && relation.Display.Role == "summary" {
-			summaryEdges++
-		}
-	}
-	if summaryNodes != 3 || summaryEdges != 3 {
-		t.Fatalf("expected 3 summary nodes and 3 summary edges, got %d and %d", summaryNodes, summaryEdges)
 	}
 }
 

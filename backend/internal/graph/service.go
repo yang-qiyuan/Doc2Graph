@@ -39,6 +39,65 @@ func (s *Service) GetEntity(jobID, entityID string) (domain.Entity, error) {
 	return domain.Entity{}, fmt.Errorf("entity not found")
 }
 
+func (s *Service) GetEntityDetail(jobID, entityID string) (domain.EntityDetailResponse, error) {
+	result, ok := s.store.GetJobResult(jobID)
+	if !ok {
+		return domain.EntityDetailResponse{}, fmt.Errorf("job result not found")
+	}
+
+	transform := newDisplayTransform(result)
+	var entity domain.Entity
+	found := false
+	for _, item := range result.Entities {
+		if item.ID == entityID {
+			entity, _, _ = transform.decorateEntity(item, false)
+			found = true
+			break
+		}
+	}
+	if !found {
+		return domain.EntityDetailResponse{}, fmt.Errorf("entity not found")
+	}
+
+	hiddenConnections := make([]domain.HiddenConnection, 0)
+	visibleRelationCount := 0
+	for _, relation := range result.Relations {
+		var neighborID string
+		switch {
+		case relation.Subject == entityID:
+			neighborID = relation.Object
+		case relation.Object == entityID:
+			neighborID = relation.Subject
+		default:
+			continue
+		}
+
+		neighbor, ok := transform.entityByID[neighborID]
+		if !ok {
+			continue
+		}
+		neighborWithDisplay, hidden, reason := transform.decorateEntity(neighbor, true)
+		relationWithDisplay, _, _ := transform.decorateRelation(relation, nil)
+		if hidden {
+			hiddenConnections = append(hiddenConnections, domain.HiddenConnection{
+				Entity:   neighborWithDisplay,
+				Relation: relationWithDisplay,
+				Display: &domain.FactInfo{
+					Group: reason,
+				},
+			})
+			continue
+		}
+		visibleRelationCount++
+	}
+
+	return domain.EntityDetailResponse{
+		Entity:               entity,
+		HiddenConnections:    hiddenConnections,
+		VisibleRelationCount: visibleRelationCount,
+	}, nil
+}
+
 func (s *Service) GetRelationEvidence(jobID, relationID string) (domain.RelationEvidenceResponse, error) {
 	result, ok := s.store.GetJobResult(jobID)
 	if !ok {

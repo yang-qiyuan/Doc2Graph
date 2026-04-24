@@ -90,14 +90,14 @@ func TestGraphEndpointsReturnStoredExtractionData(t *testing.T) {
 		if err := json.Unmarshal(rec.Body.Bytes(), &graph); err != nil {
 			t.Fatalf("unmarshal graph response: %v", err)
 		}
-		if len(graph.Entities) != 2 || len(graph.Relations) != 1 {
+		if len(graph.Entities) != 1 || len(graph.Relations) != 0 {
 			t.Fatalf("unexpected graph counts: %d entities, %d relations", len(graph.Entities), len(graph.Relations))
 		}
 		if !graph.Display.Transformed {
 			t.Fatal("expected transformed display graph")
 		}
-		if graph.Display.SummaryNodeCount != 1 {
-			t.Fatalf("expected 1 summary node, got %d", graph.Display.SummaryNodeCount)
+		if graph.Display.HiddenEntityCount != 1 {
+			t.Fatalf("expected 1 hidden entity, got %d", graph.Display.HiddenEntityCount)
 		}
 	})
 
@@ -129,6 +129,17 @@ func TestGraphEndpointsReturnStoredExtractionData(t *testing.T) {
 
 		if rec.Code != http.StatusOK {
 			t.Fatalf("expected status %d, got %d", http.StatusOK, rec.Code)
+		}
+
+		var response domain.EntityDetailResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+			t.Fatalf("unmarshal entity response: %v", err)
+		}
+		if response.Entity.ID != "E1" {
+			t.Fatalf("unexpected entity id %s", response.Entity.ID)
+		}
+		if len(response.HiddenConnections) != 1 {
+			t.Fatalf("expected 1 hidden connection, got %d", len(response.HiddenConnections))
 		}
 	})
 

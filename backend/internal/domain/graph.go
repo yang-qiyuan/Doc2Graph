@@ -7,6 +7,12 @@ type GraphResponse struct {
 	Display   GraphDisplayResponse `json:"display"`
 }
 
+type EntityDetailResponse struct {
+	Entity               Entity             `json:"entity"`
+	HiddenConnections    []HiddenConnection `json:"hidden_connections"`
+	VisibleRelationCount int                `json:"visible_relation_count"`
+}
+
 type GraphDisplayResponse struct {
 	Transformed          bool `json:"transformed"`
 	MetadataExpanded     bool `json:"metadata_expanded"`
@@ -14,6 +20,8 @@ type GraphDisplayResponse struct {
 	HiddenRelationCount  int  `json:"hidden_relation_count"`
 	CollapsedTimeLeaves  int  `json:"collapsed_time_leaves"`
 	CollapsedPlaceLeaves int  `json:"collapsed_place_leaves"`
+	CollapsedOrgLeaves   int  `json:"collapsed_org_leaves"`
+	CollapsedWorkLeaves  int  `json:"collapsed_work_leaves"`
 	SummaryNodeCount     int  `json:"summary_node_count"`
 	SummaryEdgeCount     int  `json:"summary_edge_count"`
 }

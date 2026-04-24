@@ -42,6 +42,16 @@ type ExtractionResult struct {
 	Relations []Relation       `json:"relations"`
 }
 
+type HiddenConnection struct {
+	Entity   Entity    `json:"entity"`
+	Relation Relation  `json:"relation"`
+	Display  *FactInfo `json:"display,omitempty"`
+}
+
+type FactInfo struct {
+	Group string `json:"group,omitempty"`
+}
+
 type EntityDisplay struct {
 	Role               string   `json:"role,omitempty"`
 	Importance         float64  `json:"importance,omitempty"`

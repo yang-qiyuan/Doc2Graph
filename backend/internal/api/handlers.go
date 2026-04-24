@@ -145,13 +145,13 @@ func (a *App) handleEntityByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	entity, err := a.graphService.GetEntity(jobID, entityID)
+	entityDetail, err := a.graphService.GetEntityDetail(jobID, entityID)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, errorResponse{Error: err.Error()})
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"entity": entity})
+	writeJSON(w, http.StatusOK, entityDetail)
 }
 
 func (a *App) handleRelationEvidenceByID(w http.ResponseWriter, r *http.Request) {

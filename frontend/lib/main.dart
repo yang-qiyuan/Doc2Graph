@@ -47,7 +47,7 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
   String? _error;
   JobResponse? _job;
   GraphData? _graph;
-  EntityModel? _selectedEntity;
+  EntityDetailModel? _selectedEntity;
   RelationEvidence? _selectedEvidence;
   late final ValueNotifier<EntityModel?> _hoveredEntity;
   late final ValueNotifier<RelationModel?> _hoveredRelation;
@@ -152,7 +152,11 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
     }
     if (entity.display?.role == 'summary') {
       setState(() {
-        _selectedEntity = entity;
+        _selectedEntity = EntityDetailModel(
+          entity: entity,
+          hiddenConnections: const <HiddenConnectionModel>[],
+          visibleRelationCount: 0,
+        );
         _selectedEvidence = null;
       });
       return;
@@ -165,7 +169,7 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
     });
 
     try {
-      final detailedEntity = await _api.fetchEntity(
+      final detailedEntity = await _api.fetchEntityDetail(
         _normalizedBaseUrl,
         _job!.job.id,
         entity.id,
@@ -331,6 +335,7 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
                   selectedEvidence: _selectedEvidence,
                   hoveredEntity: _hoveredEntity,
                   hoveredRelation: _hoveredRelation,
+                  onSelectHiddenRelation: _selectRelation,
                 ),
               ],
             );
@@ -355,6 +360,7 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
                     selectedEvidence: _selectedEvidence,
                     hoveredEntity: _hoveredEntity,
                     hoveredRelation: _hoveredRelation,
+                    onSelectHiddenRelation: _selectRelation,
                   ),
                 ),
               ),
@@ -598,18 +604,30 @@ class _JobSummary extends StatelessWidget {
               ),
             if (display != null && display!.transformed)
               _Metric(
+                label: 'Hidden Time',
+                value: '${display!.collapsedTimeLeaves}',
+              ),
+            if (display != null && display!.transformed)
+              _Metric(
+                label: 'Hidden Place',
+                value: '${display!.collapsedPlaceLeaves}',
+              ),
+            if (display != null && display!.transformed)
+              _Metric(
+                label: 'Hidden Org',
+                value: '${display!.collapsedOrgLeaves}',
+              ),
+            if (display != null && display!.transformed)
+              _Metric(
                 label: 'Hidden Edges',
                 value: '${display!.hiddenRelationCount}',
-              ),
-            if (display != null && display!.summaryNodeCount > 0)
-              _Metric(
-                label: 'Summary Nodes',
-                value: '${display!.summaryNodeCount}',
               ),
             if (display != null)
               _Metric(
                 label: 'Metadata View',
-                value: display!.metadataExpanded ? 'Expanded' : 'Grouped',
+                value: display!.metadataExpanded
+                    ? 'Expanded on canvas'
+                    : 'Expand on click',
               ),
           ],
         ),
@@ -743,8 +761,8 @@ class _GraphFilters extends StatelessWidget {
           child: SwitchListTile(
             value: expandMetadata,
             contentPadding: EdgeInsets.zero,
-            title: const Text('Expand metadata'),
-            subtitle: const Text('Show grouped leaves directly'),
+            title: const Text('Show small entities on canvas'),
+            subtitle: const Text('Otherwise reveal them from node detail'),
             onChanged: onExpandMetadataChanged,
           ),
         ),
@@ -1250,38 +1268,25 @@ class _LegendChip extends StatelessWidget {
 }
 
 class _EntityPanel extends StatelessWidget {
-  const _EntityPanel({required this.entity});
+  const _EntityPanel({
+    required this.detail,
+    required this.onSelectHiddenRelation,
+  });
 
-  final EntityModel entity;
+  final EntityDetailModel detail;
+  final ValueChanged<RelationModel> onSelectHiddenRelation;
 
   @override
   Widget build(BuildContext context) {
-    if (entity.display?.role == 'summary') {
-      return Card(
-        child: Padding(
-          padding: const EdgeInsets.all(20),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('Grouped Metadata',
-                  style: Theme.of(context).textTheme.titleLarge),
-              const SizedBox(height: 12),
-              Text(entity.name,
-                  style: Theme.of(context).textTheme.headlineSmall),
-              const SizedBox(height: 8),
-              Text('Group kind: ${entity.display?.groupKind ?? 'metadata'}'),
-              Text(
-                'Contains ${entity.display?.memberRelationIds.length ?? 0} hidden relations',
-              ),
-              const SizedBox(height: 12),
-              const Text(
-                'Use the Expand metadata toggle above the graph to reveal the underlying leaves.',
-              ),
-            ],
-          ),
-        ),
-      );
+    final entity = detail.entity;
+    final groupedConnections = <String, List<HiddenConnectionModel>>{};
+    for (final connection in detail.hiddenConnections) {
+      groupedConnections
+          .putIfAbsent(connection.entity.type, () => <HiddenConnectionModel>[])
+          .add(connection);
     }
+    final sortedGroups = groupedConnections.keys.toList()..sort();
+
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(20),
@@ -1295,6 +1300,9 @@ class _EntityPanel extends StatelessWidget {
             const SizedBox(height: 8),
             Text('Type: ${entity.type}'),
             Text('Source document: ${entity.sourceDoc}'),
+            Text('Visible graph connections: ${detail.visibleRelationCount}'),
+            Text(
+                'Hidden small-entity facts: ${detail.hiddenConnections.length}'),
             const SizedBox(height: 16),
             Text('Mentions', style: Theme.of(context).textTheme.titleMedium),
             const SizedBox(height: 8),
@@ -1306,9 +1314,62 @@ class _EntityPanel extends StatelessWidget {
                 ),
               ),
             ),
+            if (detail.hiddenConnections.isNotEmpty) ...[
+              const SizedBox(height: 16),
+              Text(
+                'Hidden Connected Facts',
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+              const SizedBox(height: 8),
+              ...sortedGroups.map(
+                (group) => _HiddenConnectionGroup(
+                  title: group,
+                  connections: groupedConnections[group]!,
+                  onSelectHiddenRelation: onSelectHiddenRelation,
+                ),
+              ),
+            ],
           ],
         ),
       ),
+    );
+  }
+}
+
+class _HiddenConnectionGroup extends StatelessWidget {
+  const _HiddenConnectionGroup({
+    required this.title,
+    required this.connections,
+    required this.onSelectHiddenRelation,
+  });
+
+  final String title;
+  final List<HiddenConnectionModel> connections;
+  final ValueChanged<RelationModel> onSelectHiddenRelation;
+
+  @override
+  Widget build(BuildContext context) {
+    return ExpansionTile(
+      tilePadding: EdgeInsets.zero,
+      childrenPadding: const EdgeInsets.only(bottom: 8),
+      title: Text('$title (${connections.length})'),
+      subtitle: const Text('Expand to inspect hidden entities and evidence'),
+      children: connections
+          .map(
+            (connection) => ListTile(
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+              title: Text(connection.entity.name),
+              subtitle: Text(
+                '${connection.relation.predicate} • ${connection.entity.type}',
+              ),
+              trailing: TextButton(
+                onPressed: () => onSelectHiddenRelation(connection.relation),
+                child: const Text('Evidence'),
+              ),
+            ),
+          )
+          .toList(),
     );
   }
 }
@@ -1510,12 +1571,14 @@ class _DetailPane extends StatelessWidget {
     required this.selectedEvidence,
     required this.hoveredEntity,
     required this.hoveredRelation,
+    required this.onSelectHiddenRelation,
   });
 
-  final EntityModel? selectedEntity;
+  final EntityDetailModel? selectedEntity;
   final RelationEvidence? selectedEvidence;
   final ValueNotifier<EntityModel?> hoveredEntity;
   final ValueNotifier<RelationModel?> hoveredRelation;
+  final ValueChanged<RelationModel> onSelectHiddenRelation;
 
   @override
   Widget build(BuildContext context) {
@@ -1523,7 +1586,10 @@ class _DetailPane extends StatelessWidget {
       return _EvidencePanel(evidence: selectedEvidence!);
     }
     if (selectedEntity != null) {
-      return _EntityPanel(entity: selectedEntity!);
+      return _EntityPanel(
+        detail: selectedEntity!,
+        onSelectHiddenRelation: onSelectHiddenRelation,
+      );
     }
 
     return AnimatedBuilder(
@@ -2139,6 +2205,14 @@ class Doc2GraphApi {
     );
   }
 
+  Future<EntityDetailModel> fetchEntityDetail(
+      String baseUrl, String jobId, String entityId) async {
+    final response = await http.get(
+      Uri.parse('$baseUrl/api/v1/entities/$entityId?job_id=$jobId'),
+    );
+    return _decodeResponse(response, EntityDetailModel.fromJson);
+  }
+
   Future<RelationEvidence> fetchRelationEvidence(
     String baseUrl,
     String jobId,
@@ -2223,6 +2297,8 @@ class GraphDisplayModel {
     required this.hiddenRelationCount,
     required this.collapsedTimeLeaves,
     required this.collapsedPlaceLeaves,
+    required this.collapsedOrgLeaves,
+    required this.collapsedWorkLeaves,
     required this.summaryNodeCount,
     required this.summaryEdgeCount,
   });
@@ -2233,6 +2309,8 @@ class GraphDisplayModel {
   final int hiddenRelationCount;
   final int collapsedTimeLeaves;
   final int collapsedPlaceLeaves;
+  final int collapsedOrgLeaves;
+  final int collapsedWorkLeaves;
   final int summaryNodeCount;
   final int summaryEdgeCount;
 
@@ -2244,8 +2322,61 @@ class GraphDisplayModel {
       hiddenRelationCount: json['hidden_relation_count'] as int? ?? 0,
       collapsedTimeLeaves: json['collapsed_time_leaves'] as int? ?? 0,
       collapsedPlaceLeaves: json['collapsed_place_leaves'] as int? ?? 0,
+      collapsedOrgLeaves: json['collapsed_org_leaves'] as int? ?? 0,
+      collapsedWorkLeaves: json['collapsed_work_leaves'] as int? ?? 0,
       summaryNodeCount: json['summary_node_count'] as int? ?? 0,
       summaryEdgeCount: json['summary_edge_count'] as int? ?? 0,
+    );
+  }
+}
+
+class EntityDetailModel {
+  EntityDetailModel({
+    required this.entity,
+    required this.hiddenConnections,
+    required this.visibleRelationCount,
+  });
+
+  final EntityModel entity;
+  final List<HiddenConnectionModel> hiddenConnections;
+  final int visibleRelationCount;
+
+  factory EntityDetailModel.fromJson(Map<String, dynamic> json) {
+    return EntityDetailModel(
+      entity: EntityModel.fromJson(json['entity'] as Map<String, dynamic>),
+      hiddenConnections:
+          ((json['hidden_connections'] as List<dynamic>? ?? <dynamic>[]))
+              .map(
+                (item) => HiddenConnectionModel.fromJson(
+                  item as Map<String, dynamic>,
+                ),
+              )
+              .toList(),
+      visibleRelationCount: json['visible_relation_count'] as int? ?? 0,
+    );
+  }
+}
+
+class HiddenConnectionModel {
+  HiddenConnectionModel({
+    required this.entity,
+    required this.relation,
+    required this.group,
+  });
+
+  final EntityModel entity;
+  final RelationModel relation;
+  final String group;
+
+  factory HiddenConnectionModel.fromJson(Map<String, dynamic> json) {
+    final display =
+        json['display'] as Map<String, dynamic>? ?? <String, dynamic>{};
+    return HiddenConnectionModel(
+      entity: EntityModel.fromJson(json['entity'] as Map<String, dynamic>),
+      relation: RelationModel.fromJson(
+        json['relation'] as Map<String, dynamic>,
+      ),
+      group: display['group'] as String? ?? '',
     );
   }
 }
