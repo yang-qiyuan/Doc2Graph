@@ -109,13 +109,16 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
   }
 
   Future<void> _selectEntity(EntityModel entity) async {
-    if (_job == null) {
+    if (_job == null || _graph == null) {
       return;
     }
+
+    // Toggle: if already expanded, collapse it
     if (_expandedEntityDetails.containsKey(entity.id)) {
       _collapseEntity(entity.id);
       return;
     }
+
     if (entity.display?.role == 'summary') {
       setState(() {
         _selectedEntity = EntityDetailModel(
@@ -128,37 +131,60 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
       return;
     }
 
-    setState(() {
-      _isLoading = true;
-      _error = null;
-      _selectedEvidence = null;
-    });
+    // Build entity detail from graph data
+    final connections = <HiddenConnectionModel>[];
+    final entityById = <String, EntityModel>{
+      for (final e in _graph!.entities) e.id: e
+    };
 
-    try {
-      final detailedEntity = await _api.fetchEntityDetail(
-        _normalizedBaseUrl,
-        _job!.job.id,
-        entity.id,
-      );
-      setState(() {
-        _selectedEntity = detailedEntity;
-        if (_graph != null && isMajorGraphEntity(entity, _graph!.documents)) {
-          _expandedEntityDetails.clear();
-          _expandedEntityDetails[entity.id] = detailedEntity;
+    // Find all relations where this entity is the subject or object
+    for (final relation in _graph!.relations) {
+      if (relation.subject == entity.id) {
+        final connectedEntity = entityById[relation.object];
+        if (connectedEntity != null && connectedEntity.type != 'Person') {
+          connections.add(HiddenConnectionModel(
+            entity: connectedEntity,
+            relation: relation,
+            group: connectedEntity.type,
+          ));
         }
-        _predicateFilter = 'all';
-      });
-    } catch (error) {
-      setState(() {
-        _error = error.toString();
-      });
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isLoading = false;
-        });
+      } else if (relation.object == entity.id) {
+        final connectedEntity = entityById[relation.subject];
+        if (connectedEntity != null && connectedEntity.type != 'Person') {
+          connections.add(HiddenConnectionModel(
+            entity: connectedEntity,
+            relation: relation,
+            group: connectedEntity.type,
+          ));
+        }
       }
     }
+
+    // Count visible Person-Person relations
+    int visibleRelationCount = 0;
+    for (final relation in _graph!.relations) {
+      if (relation.subject == entity.id || relation.object == entity.id) {
+        final otherEntityId =
+            relation.subject == entity.id ? relation.object : relation.subject;
+        final otherEntity = entityById[otherEntityId];
+        if (otherEntity != null && otherEntity.type == 'Person') {
+          visibleRelationCount++;
+        }
+      }
+    }
+
+    final detailedEntity = EntityDetailModel(
+      entity: entity,
+      hiddenConnections: connections,
+      visibleRelationCount: visibleRelationCount,
+    );
+
+    setState(() {
+      _selectedEntity = detailedEntity;
+      _expandedEntityDetails[entity.id] = detailedEntity;
+      _selectedEvidence = null;
+      _predicateFilter = 'all';
+    });
   }
 
   void _collapseEntity(String entityId) {
@@ -236,12 +262,6 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
   String get _normalizedBaseUrl =>
       _baseUrlController.text.trim().replaceAll(RegExp(r'/$'), '');
 
-  List<HiddenConnectionModel> get _expandedHiddenConnections {
-    return _expandedEntityDetails.values
-        .expand((detail) => detail.hiddenConnections)
-        .toList();
-  }
-
   List<RelationModel> get _displayRelations {
     final graph = _graph;
     if (graph == null) {
@@ -259,6 +279,9 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
       for (final entity in graph.entities) entity.id: entity.type
     };
 
+    // Get IDs of expanded person entities
+    final expandedPersonIds = _expandedEntityDetails.keys.toSet();
+
     // Show all Person-Person relations (not just major-to-major)
     for (final relation in graph.relations) {
       final subjectType = entityTypeById[relation.subject] ?? '';
@@ -270,15 +293,16 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
             majorIds.contains(relation.object)) {
           relationById[relation.id] = relation;
         }
-      } else if (majorIds.contains(relation.subject) &&
-          majorIds.contains(relation.object)) {
-        // For non Person-Person relations, still require both to be major
-        relationById[relation.id] = relation;
+      } else {
+        // For Person to non-Person relations, show only if the Person is expanded
+        if (subjectType == 'Person' && expandedPersonIds.contains(relation.subject)) {
+          relationById[relation.id] = relation;
+        } else if (objectType == 'Person' && expandedPersonIds.contains(relation.object)) {
+          relationById[relation.id] = relation;
+        }
       }
     }
-    for (final connection in _expandedHiddenConnections) {
-      relationById[connection.relation.id] = connection.relation;
-    }
+
     return relationById.values.toList();
   }
 
@@ -294,37 +318,20 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
 
     final displayEntityIds = <String>{};
 
-    // Always show major entities (document subjects)
-    for (final entity in graph.entities) {
-      if (isMajorGraphEntity(entity, graph.documents)) {
-        displayEntityIds.add(entity.id);
-      }
-    }
-
-    // Also show Person entities that are connected to major entities via displayed relations
+    // Get displayed relations to know which entities are referenced
     final displayedRelations = _displayRelations;
+
+    // Collect all entity IDs from displayed relations
     for (final relation in displayedRelations) {
-      // Add both subject and object entities if they're Person type
-      for (final entityId in [relation.subject, relation.object]) {
-        if (!displayEntityIds.contains(entityId)) {
-          final entity = entityById[entityId];
-          if (entity != null && entity.type == 'Person') {
-            displayEntityIds.add(entityId);
-          }
-        }
-      }
+      displayEntityIds.add(relation.subject);
+      displayEntityIds.add(relation.object);
     }
 
-    for (final detail in _expandedEntityDetails.values) {
-      displayEntityIds.add(detail.entity.id);
-      for (final connection in detail.hiddenConnections) {
-        displayEntityIds.add(connection.entity.id);
-      }
-    }
-
+    // Filter to only return entities that exist and filter appropriately
     return displayEntityIds
-        .map((id) => entityById[id]!)
-        .where((entity) => entity.id.isNotEmpty)
+        .map((id) => entityById[id])
+        .where((entity) => entity != null && entity.id.isNotEmpty)
+        .cast<EntityModel>()
         .toList();
   }
 
