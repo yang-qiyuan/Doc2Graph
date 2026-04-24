@@ -77,6 +77,7 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
       _error = null;
       _selectedEntity = null;
       _selectedEvidence = null;
+      _predicateFilter = 'all';
       _expandedEntityDetails.clear();
     });
     _hoveredEntity.value = null;
@@ -139,6 +140,7 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
         _expandedEntityDetails.clear();
         _selectedEntity = detailedEntity;
         _expandedEntityDetails[entity.id] = detailedEntity;
+        _predicateFilter = 'all';
       });
     } catch (error) {
       setState(() {
@@ -160,6 +162,7 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
         _selectedEntity = null;
       }
       _selectedEvidence = null;
+      _predicateFilter = 'all';
     });
     _hoveredEntity.value = null;
     _hoveredRelation.value = null;
@@ -170,6 +173,7 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
       _expandedEntityDetails.clear();
       _selectedEntity = null;
       _selectedEvidence = null;
+      _predicateFilter = 'all';
     });
     _hoveredEntity.value = null;
     _hoveredRelation.value = null;
@@ -279,11 +283,12 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
 
   List<RelationModel> get _filteredRelations {
     final relations = _displayRelations;
+    final predicateFilter = _effectivePredicateFilter;
     return relations.where((relation) {
       if (relation.confidence < _minConfidence) {
         return false;
       }
-      if (_predicateFilter != 'all' && relation.predicate != _predicateFilter) {
+      if (predicateFilter != 'all' && relation.predicate != predicateFilter) {
         return false;
       }
       return true;
@@ -291,22 +296,7 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
   }
 
   List<EntityModel> get _filteredEntities {
-    final graph = _graph;
-    if (graph == null) {
-      return const <EntityModel>[];
-    }
-
-    final includedIds = <String>{};
-    for (final relation in _filteredRelations) {
-      includedIds.add(relation.subject);
-      includedIds.add(relation.object);
-    }
-    if (includedIds.isEmpty) {
-      return _displayEntities;
-    }
-    return _displayEntities
-        .where((entity) => includedIds.contains(entity.id))
-        .toList();
+    return _displayEntities;
   }
 
   List<String> get _availablePredicates {
@@ -317,6 +307,11 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
     final predicates =
         _displayRelations.map((e) => e.predicate).toSet().toList()..sort();
     return ['all', ...predicates];
+  }
+
+  String get _effectivePredicateFilter {
+    final predicates = _availablePredicates;
+    return effectivePredicateFilter(_predicateFilter, predicates);
   }
 
   @override
@@ -338,7 +333,7 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
             filteredEntities: _filteredEntities,
             filteredRelations: _filteredRelations,
             minConfidence: _minConfidence,
-            predicateFilter: _predicateFilter,
+            predicateFilter: _effectivePredicateFilter,
             availablePredicates: _availablePredicates,
             expandedEntityCount: _expandedEntityDetails.length,
             onMinConfidenceChanged: (value) {
@@ -793,17 +788,25 @@ class _GraphFilters extends StatelessWidget {
           ),
         ),
         SizedBox(
-          width: 260,
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.end,
+          width: 320,
+          child: Wrap(
+            alignment: WrapAlignment.end,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            spacing: 12,
+            runSpacing: 8,
             children: [
-              Text('Expanded nodes: $expandedEntityCount'),
-              const SizedBox(width: 12),
-              OutlinedButton.icon(
-                onPressed:
-                    expandedEntityCount == 0 ? null : onCollapseAllEntities,
-                icon: const Icon(Icons.close),
-                label: const Text('Collapse all'),
+              Text(
+                'Expanded: $expandedEntityCount',
+                overflow: TextOverflow.ellipsis,
+              ),
+              Tooltip(
+                message: 'Collapse all expanded nodes',
+                child: OutlinedButton.icon(
+                  onPressed:
+                      expandedEntityCount == 0 ? null : onCollapseAllEntities,
+                  icon: const Icon(Icons.close),
+                  label: const Text('Collapse'),
+                ),
               ),
             ],
           ),
@@ -2198,6 +2201,15 @@ bool isMajorGraphEntity(EntityModel entity, List<DocumentModel> documents) {
 
 String normalizeGraphLabel(String value) {
   return value.toLowerCase().trim().replaceAll(RegExp(r'\s+'), ' ');
+}
+
+String effectivePredicateFilter(
+  String predicateFilter,
+  List<String> availablePredicates,
+) {
+  return availablePredicates.contains(predicateFilter)
+      ? predicateFilter
+      : 'all';
 }
 
 Color predicateColor(String predicate) {

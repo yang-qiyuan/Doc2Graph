@@ -45,4 +45,15 @@ void main() {
     expect(isMajorGraphEntity(secondaryPerson, documents), isFalse);
     expect(isMajorGraphEntity(place, documents), isFalse);
   });
+
+  test('stale relation predicate filters fall back to all relations', () {
+    expect(
+      effectivePredicateFilter('student_of', const ['all', 'born_in']),
+      'all',
+    );
+    expect(
+      effectivePredicateFilter('born_in', const ['all', 'born_in']),
+      'born_in',
+    );
+  });
 }
