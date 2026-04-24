@@ -53,7 +53,7 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
   late final ValueNotifier<RelationModel?> _hoveredRelation;
   double _minConfidence = 0.0;
   String _predicateFilter = 'all';
-  bool _expandMetadata = false;
+  final Map<String, EntityDetailModel> _expandedEntityDetails = {};
 
   @override
   void initState() {
@@ -77,6 +77,7 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
       _error = null;
       _selectedEntity = null;
       _selectedEvidence = null;
+      _expandedEntityDetails.clear();
     });
     _hoveredEntity.value = null;
     _hoveredRelation.value = null;
@@ -87,50 +88,10 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
       final graph = await _api.fetchGraph(
         baseUrl,
         job.job.id,
-        expandMetadata: _expandMetadata,
+        expandMetadata: false,
       );
       setState(() {
         _job = job;
-        _graph = graph;
-      });
-    } catch (error) {
-      setState(() {
-        _error = error.toString();
-      });
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isLoading = false;
-        });
-      }
-    }
-  }
-
-  Future<void> _reloadGraph({required bool expandMetadata}) async {
-    if (_job == null) {
-      setState(() {
-        _expandMetadata = expandMetadata;
-      });
-      return;
-    }
-
-    setState(() {
-      _isLoading = true;
-      _error = null;
-      _expandMetadata = expandMetadata;
-      _selectedEntity = null;
-      _selectedEvidence = null;
-    });
-    _hoveredEntity.value = null;
-    _hoveredRelation.value = null;
-
-    try {
-      final graph = await _api.fetchGraph(
-        _normalizedBaseUrl,
-        _job!.job.id,
-        expandMetadata: expandMetadata,
-      );
-      setState(() {
         _graph = graph;
       });
     } catch (error) {
@@ -176,6 +137,7 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
       );
       setState(() {
         _selectedEntity = detailedEntity;
+        _expandedEntityDetails[entity.id] = detailedEntity;
       });
     } catch (error) {
       setState(() {
@@ -188,6 +150,28 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
         });
       }
     }
+  }
+
+  void _collapseEntity(String entityId) {
+    setState(() {
+      _expandedEntityDetails.remove(entityId);
+      if (_selectedEntity?.entity.id == entityId) {
+        _selectedEntity = null;
+      }
+      _selectedEvidence = null;
+    });
+    _hoveredEntity.value = null;
+    _hoveredRelation.value = null;
+  }
+
+  void _collapseAllEntities() {
+    setState(() {
+      _expandedEntityDetails.clear();
+      _selectedEntity = null;
+      _selectedEvidence = null;
+    });
+    _hoveredEntity.value = null;
+    _hoveredRelation.value = null;
   }
 
   Future<void> _selectRelation(RelationModel relation) async {
@@ -241,8 +225,59 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
   String get _normalizedBaseUrl =>
       _baseUrlController.text.trim().replaceAll(RegExp(r'/$'), '');
 
+  List<HiddenConnectionModel> get _expandedHiddenConnections {
+    return _expandedEntityDetails.values
+        .expand((detail) => detail.hiddenConnections)
+        .toList();
+  }
+
+  List<RelationModel> get _displayRelations {
+    final graph = _graph;
+    if (graph == null) {
+      return const <RelationModel>[];
+    }
+
+    final relationById = <String, RelationModel>{};
+    final majorIds = graph.entities
+        .where((entity) => isMajorGraphEntity(entity))
+        .map((entity) => entity.id)
+        .toSet();
+
+    for (final relation in graph.relations) {
+      if (majorIds.contains(relation.subject) &&
+          majorIds.contains(relation.object)) {
+        relationById[relation.id] = relation;
+      }
+    }
+    for (final connection in _expandedHiddenConnections) {
+      relationById[connection.relation.id] = connection.relation;
+    }
+    return relationById.values.toList();
+  }
+
+  List<EntityModel> get _displayEntities {
+    final graph = _graph;
+    if (graph == null) {
+      return const <EntityModel>[];
+    }
+
+    final entityById = <String, EntityModel>{};
+    for (final entity in graph.entities) {
+      if (isMajorGraphEntity(entity)) {
+        entityById[entity.id] = entity;
+      }
+    }
+    for (final detail in _expandedEntityDetails.values) {
+      entityById[detail.entity.id] = detail.entity;
+      for (final connection in detail.hiddenConnections) {
+        entityById[connection.entity.id] = connection.entity;
+      }
+    }
+    return entityById.values.toList();
+  }
+
   List<RelationModel> get _filteredRelations {
-    final relations = _graph?.relations ?? const <RelationModel>[];
+    final relations = _displayRelations;
     return relations.where((relation) {
       if (relation.confidence < _minConfidence) {
         return false;
@@ -266,9 +301,9 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
       includedIds.add(relation.object);
     }
     if (includedIds.isEmpty) {
-      return graph.entities;
+      return _displayEntities;
     }
-    return graph.entities
+    return _displayEntities
         .where((entity) => includedIds.contains(entity.id))
         .toList();
   }
@@ -278,8 +313,8 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
     if (graph == null) {
       return const ['all'];
     }
-    final predicates = graph.relations.map((e) => e.predicate).toSet().toList()
-      ..sort();
+    final predicates =
+        _displayRelations.map((e) => e.predicate).toSet().toList()..sort();
     return ['all', ...predicates];
   }
 
@@ -304,7 +339,7 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
             minConfidence: _minConfidence,
             predicateFilter: _predicateFilter,
             availablePredicates: _availablePredicates,
-            expandMetadata: _expandMetadata,
+            expandedEntityCount: _expandedEntityDetails.length,
             onMinConfidenceChanged: (value) {
               setState(() {
                 _minConfidence = value;
@@ -315,9 +350,7 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
                 _predicateFilter = value;
               });
             },
-            onExpandMetadataChanged: (value) {
-              _reloadGraph(expandMetadata: value);
-            },
+            onCollapseAllEntities: _collapseAllEntities,
             onRunWikipediaFixtures: _runWikipediaFixtures,
             onSelectEntity: _selectEntity,
             onSelectRelation: _selectRelation,
@@ -336,6 +369,7 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
                   hoveredEntity: _hoveredEntity,
                   hoveredRelation: _hoveredRelation,
                   onSelectHiddenRelation: _selectRelation,
+                  onCollapseEntity: _collapseEntity,
                 ),
               ],
             );
@@ -361,6 +395,7 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
                     hoveredEntity: _hoveredEntity,
                     hoveredRelation: _hoveredRelation,
                     onSelectHiddenRelation: _selectRelation,
+                    onCollapseEntity: _collapseEntity,
                   ),
                 ),
               ),
@@ -384,10 +419,10 @@ class _MainPanel extends StatelessWidget {
     required this.minConfidence,
     required this.predicateFilter,
     required this.availablePredicates,
-    required this.expandMetadata,
+    required this.expandedEntityCount,
     required this.onMinConfidenceChanged,
     required this.onPredicateFilterChanged,
-    required this.onExpandMetadataChanged,
+    required this.onCollapseAllEntities,
     required this.onRunWikipediaFixtures,
     required this.onSelectEntity,
     required this.onSelectRelation,
@@ -404,10 +439,10 @@ class _MainPanel extends StatelessWidget {
   final double minConfidence;
   final String predicateFilter;
   final List<String> availablePredicates;
-  final bool expandMetadata;
+  final int expandedEntityCount;
   final ValueChanged<double> onMinConfidenceChanged;
   final ValueChanged<String> onPredicateFilterChanged;
-  final ValueChanged<bool> onExpandMetadataChanged;
+  final VoidCallback onCollapseAllEntities;
   final Future<void> Function() onRunWikipediaFixtures;
   final ValueChanged<EntityModel> onSelectEntity;
   final ValueChanged<RelationModel> onSelectRelation;
@@ -493,10 +528,10 @@ class _MainPanel extends StatelessWidget {
                   minConfidence: minConfidence,
                   predicateFilter: predicateFilter,
                   availablePredicates: availablePredicates,
-                  expandMetadata: expandMetadata,
+                  expandedEntityCount: expandedEntityCount,
                   onMinConfidenceChanged: onMinConfidenceChanged,
                   onPredicateFilterChanged: onPredicateFilterChanged,
-                  onExpandMetadataChanged: onExpandMetadataChanged,
+                  onCollapseAllEntities: onCollapseAllEntities,
                 ),
                 const SizedBox(height: 16),
                 _GraphCanvas(
@@ -695,19 +730,19 @@ class _GraphFilters extends StatelessWidget {
     required this.minConfidence,
     required this.predicateFilter,
     required this.availablePredicates,
-    required this.expandMetadata,
+    required this.expandedEntityCount,
     required this.onMinConfidenceChanged,
     required this.onPredicateFilterChanged,
-    required this.onExpandMetadataChanged,
+    required this.onCollapseAllEntities,
   });
 
   final double minConfidence;
   final String predicateFilter;
   final List<String> availablePredicates;
-  final bool expandMetadata;
+  final int expandedEntityCount;
   final ValueChanged<double> onMinConfidenceChanged;
   final ValueChanged<String> onPredicateFilterChanged;
-  final ValueChanged<bool> onExpandMetadataChanged;
+  final VoidCallback onCollapseAllEntities;
 
   @override
   Widget build(BuildContext context) {
@@ -758,12 +793,18 @@ class _GraphFilters extends StatelessWidget {
         ),
         SizedBox(
           width: 260,
-          child: SwitchListTile(
-            value: expandMetadata,
-            contentPadding: EdgeInsets.zero,
-            title: const Text('Show small entities on canvas'),
-            subtitle: const Text('Otherwise reveal them from node detail'),
-            onChanged: onExpandMetadataChanged,
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              Text('Expanded nodes: $expandedEntityCount'),
+              const SizedBox(width: 12),
+              OutlinedButton.icon(
+                onPressed:
+                    expandedEntityCount == 0 ? null : onCollapseAllEntities,
+                icon: const Icon(Icons.close),
+                label: const Text('Collapse all'),
+              ),
+            ],
           ),
         ),
       ],
@@ -1271,10 +1312,12 @@ class _EntityPanel extends StatelessWidget {
   const _EntityPanel({
     required this.detail,
     required this.onSelectHiddenRelation,
+    required this.onCollapseEntity,
   });
 
   final EntityDetailModel detail;
   final ValueChanged<RelationModel> onSelectHiddenRelation;
+  final ValueChanged<String> onCollapseEntity;
 
   @override
   Widget build(BuildContext context) {
@@ -1303,6 +1346,12 @@ class _EntityPanel extends StatelessWidget {
             Text('Visible graph connections: ${detail.visibleRelationCount}'),
             Text(
                 'Hidden small-entity facts: ${detail.hiddenConnections.length}'),
+            const SizedBox(height: 12),
+            OutlinedButton.icon(
+              onPressed: () => onCollapseEntity(entity.id),
+              icon: const Icon(Icons.unfold_less),
+              label: const Text('Collapse this node'),
+            ),
             const SizedBox(height: 16),
             Text('Mentions', style: Theme.of(context).textTheme.titleMedium),
             const SizedBox(height: 8),
@@ -1572,6 +1621,7 @@ class _DetailPane extends StatelessWidget {
     required this.hoveredEntity,
     required this.hoveredRelation,
     required this.onSelectHiddenRelation,
+    required this.onCollapseEntity,
   });
 
   final EntityDetailModel? selectedEntity;
@@ -1579,6 +1629,7 @@ class _DetailPane extends StatelessWidget {
   final ValueNotifier<EntityModel?> hoveredEntity;
   final ValueNotifier<RelationModel?> hoveredRelation;
   final ValueChanged<RelationModel> onSelectHiddenRelation;
+  final ValueChanged<String> onCollapseEntity;
 
   @override
   Widget build(BuildContext context) {
@@ -1589,6 +1640,7 @@ class _DetailPane extends StatelessWidget {
       return _EntityPanel(
         detail: selectedEntity!,
         onSelectHiddenRelation: onSelectHiddenRelation,
+        onCollapseEntity: onCollapseEntity,
       );
     }
 
@@ -2130,6 +2182,10 @@ Color entityTypeColor(String type) {
     default:
       return const Color(0xFFE4E0D7);
   }
+}
+
+bool isMajorGraphEntity(EntityModel entity) {
+  return entity.type == 'Person';
 }
 
 Color predicateColor(String predicate) {
