@@ -1674,8 +1674,8 @@ class GraphLayout {
           ..sort(
             (a, b) => a.name.compareTo(b.name),
           );
-    final personOvalRadiusX = 110.0 + (personEntities.length * 6.0);
-    final personOvalRadiusY = 72.0 + (personEntities.length * 3.8);
+    final personOvalRadiusX = 72.0 + (personEntities.length * 4.0);
+    final personOvalRadiusY = 48.0 + (personEntities.length * 2.4);
     final outerTypeCounts = <String, int>{};
     final outerTypeIndex = <String, int>{};
     for (final entity in outerEntities) {
@@ -1715,16 +1715,16 @@ class GraphLayout {
       final localT = typeTotal == 1 ? 0.0 : (typeIndex / (typeTotal - 1)) - 0.5;
       final angle = sectorCenter + (localT * sectorSpread);
       final radius = switch (entity.type) {
-        'Time' => 200.0,
-        'Place' => 185.0,
-        'Organization' => 175.0,
-        'Work' => 190.0,
-        'MetaGroup' => 145.0,
-        _ => 195.0,
+        'Time' => 155.0,
+        'Place' => 145.0,
+        'Organization' => 138.0,
+        'Work' => 148.0,
+        'MetaGroup' => 112.0,
+        _ => 150.0,
       };
       positions[entity.id] = Offset(
         center.dx + math.cos(angle) * radius,
-        center.dy + math.sin(angle) * (radius * 0.78),
+        center.dy + math.sin(angle) * (radius * 0.7),
       );
       velocities[entity.id] = Offset.zero;
     }
@@ -1772,18 +1772,18 @@ class GraphLayout {
         final toCenter = center - current;
         final distance = math.max(1.0, toCenter.distance);
         final preferredRadius = switch (entity.type) {
-          'Person' => 58.0 + ((degree[entity.id] ?? 0) * 5.0),
-          'MetaGroup' => 120.0,
-          'Place' => 150.0,
-          'Organization' => 145.0,
-          'Work' => 165.0,
-          'Time' => 180.0,
-          _ => 170.0,
+          'Person' => 34.0 + ((degree[entity.id] ?? 0) * 4.2),
+          'MetaGroup' => 88.0,
+          'Place' => 118.0,
+          'Organization' => 112.0,
+          'Work' => 124.0,
+          'Time' => 138.0,
+          _ => 125.0,
         };
         final radialError = distance - preferredRadius;
         var centerForce = Offset(
-          (toCenter.dx / distance) * (radialError * 0.0048),
-          (toCenter.dy / distance) * (radialError * 0.0048),
+          (toCenter.dx / distance) * (radialError * 0.0068),
+          (toCenter.dy / distance) * (radialError * 0.0068),
         );
         forces[entity.id] = forces[entity.id]! + centerForce;
 
