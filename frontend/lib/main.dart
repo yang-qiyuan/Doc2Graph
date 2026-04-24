@@ -1676,6 +1676,11 @@ class GraphLayout {
           );
     final personOvalRadiusX = 110.0 + (personEntities.length * 6.0);
     final personOvalRadiusY = 72.0 + (personEntities.length * 3.8);
+    final outerTypeCounts = <String, int>{};
+    final outerTypeIndex = <String, int>{};
+    for (final entity in outerEntities) {
+      outerTypeCounts[entity.type] = (outerTypeCounts[entity.type] ?? 0) + 1;
+    }
 
     for (var i = 0; i < personEntities.length; i++) {
       final angle = (2 * math.pi * i) / math.max(1, personEntities.length);
@@ -1688,18 +1693,38 @@ class GraphLayout {
 
     for (var i = 0; i < outerEntities.length; i++) {
       final entity = outerEntities[i];
-      final angle = (2 * math.pi * i) / math.max(1, outerEntities.length);
+      final typeIndex = outerTypeIndex[entity.type] ?? 0;
+      outerTypeIndex[entity.type] = typeIndex + 1;
+      final typeTotal = math.max(1, outerTypeCounts[entity.type] ?? 1);
+      final sectorCenter = switch (entity.type) {
+        'Time' => -math.pi / 2,
+        'Place' => math.pi,
+        'Organization' => 0.0,
+        'Work' => math.pi / 2,
+        'MetaGroup' => -math.pi / 6,
+        _ => (2 * math.pi * i) / math.max(1, outerEntities.length),
+      };
+      final sectorSpread = switch (entity.type) {
+        'MetaGroup' => 0.55,
+        'Organization' => 1.0,
+        'Work' => 0.9,
+        'Place' => 0.95,
+        'Time' => 0.8,
+        _ => 1.1,
+      };
+      final localT = typeTotal == 1 ? 0.0 : (typeIndex / (typeTotal - 1)) - 0.5;
+      final angle = sectorCenter + (localT * sectorSpread);
       final radius = switch (entity.type) {
-        'Time' => 250.0,
-        'Place' => 220.0,
-        'Organization' => 210.0,
-        'Work' => 230.0,
-        'MetaGroup' => 170.0,
-        _ => 235.0,
+        'Time' => 200.0,
+        'Place' => 185.0,
+        'Organization' => 175.0,
+        'Work' => 190.0,
+        'MetaGroup' => 145.0,
+        _ => 195.0,
       };
       positions[entity.id] = Offset(
         center.dx + math.cos(angle) * radius,
-        center.dy + math.sin(angle) * radius,
+        center.dy + math.sin(angle) * (radius * 0.78),
       );
       velocities[entity.id] = Offset.zero;
     }
@@ -1747,18 +1772,18 @@ class GraphLayout {
         final toCenter = center - current;
         final distance = math.max(1.0, toCenter.distance);
         final preferredRadius = switch (entity.type) {
-          'Person' => 65.0 + ((degree[entity.id] ?? 0) * 6.0),
-          'MetaGroup' => 135.0,
-          'Place' => 170.0,
-          'Organization' => 185.0,
-          'Work' => 210.0,
-          'Time' => 245.0,
-          _ => 220.0,
+          'Person' => 58.0 + ((degree[entity.id] ?? 0) * 5.0),
+          'MetaGroup' => 120.0,
+          'Place' => 150.0,
+          'Organization' => 145.0,
+          'Work' => 165.0,
+          'Time' => 180.0,
+          _ => 170.0,
         };
         final radialError = distance - preferredRadius;
         var centerForce = Offset(
-          (toCenter.dx / distance) * (radialError * 0.0038),
-          (toCenter.dy / distance) * (radialError * 0.0038),
+          (toCenter.dx / distance) * (radialError * 0.0048),
+          (toCenter.dy / distance) * (radialError * 0.0048),
         );
         forces[entity.id] = forces[entity.id]! + centerForce;
 
