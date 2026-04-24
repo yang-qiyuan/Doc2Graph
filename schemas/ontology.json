@@ -1,0 +1,37 @@
+{
+  "entity_types": [
+    "Person",
+    "Organization",
+    "Place",
+    "Work",
+    "Time"
+  ],
+  "relations": {
+    "PERSON-PERSON": [
+      "influenced_by",
+      "collaborated_with",
+      "family_of",
+      "student_of"
+    ],
+    "PERSON-ORG": [
+      "worked_at",
+      "studied_at",
+      "founded",
+      "member_of"
+    ],
+    "PERSON-PLACE": [
+      "born_in",
+      "died_in",
+      "lived_in"
+    ],
+    "PERSON-WORK": [
+      "authored",
+      "translated",
+      "edited"
+    ],
+    "PERSON-TIME": [
+      "born_on",
+      "died_on"
+    ]
+  }
+}

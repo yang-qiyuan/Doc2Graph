@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <!--
+    If you are serving your web app in a path other than the root, change the
+    href value below to reflect the base path you are serving from.
+
+    The path provided below has to start and end with a slash "/" in order for
+    it to work correctly.
+
+    For more details:
+    * https://developer.mozilla.org/en-US/docs/Web/HTML/Element/base
+
+    This is a placeholder for base href that will be replaced by the value of
+    the `--base-href` argument provided to `flutter build`.
+  -->
+  <base href="$FLUTTER_BASE_HREF">
+
+  <meta charset="UTF-8">
+  <meta content="IE=Edge" http-equiv="X-UA-Compatible">
+  <meta name="description" content="Doc2Graph local inspector">
+
+  <!-- iOS meta tags & icons -->
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="Doc2Graph">
+  <link rel="apple-touch-icon" href="icons/Icon-192.png">
+
+  <!-- Favicon -->
+  <link rel="icon" type="image/png" href="favicon.png"/>
+
+  <title>Doc2Graph</title>
+  <link rel="manifest" href="manifest.json">
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: #f4f1e8;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    #boot {
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background:
+        radial-gradient(circle at top left, rgba(11, 110, 79, 0.16), transparent 30%),
+        linear-gradient(135deg, #f7f3eb 0%, #efe7d8 100%);
+      color: #133328;
+    }
+
+    .boot-card {
+      width: min(560px, calc(100vw - 48px));
+      padding: 28px;
+      border-radius: 24px;
+      background: rgba(255, 255, 255, 0.9);
+      box-shadow: 0 24px 80px rgba(16, 45, 34, 0.12);
+      border: 1px solid rgba(11, 110, 79, 0.12);
+    }
+
+    .boot-kicker {
+      display: inline-block;
+      margin-bottom: 12px;
+      padding: 6px 10px;
+      border-radius: 999px;
+      background: #d9eadf;
+      color: #0b6e4f;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .boot-title {
+      margin: 0 0 10px;
+      font-size: 32px;
+      line-height: 1.1;
+    }
+
+    .boot-copy {
+      margin: 0 0 18px;
+      color: #355449;
+      line-height: 1.5;
+    }
+
+    .boot-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      color: #355449;
+      font-size: 14px;
+    }
+
+    .boot-spinner {
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      border: 2px solid rgba(11, 110, 79, 0.2);
+      border-top-color: #0b6e4f;
+      animation: boot-spin 0.9s linear infinite;
+    }
+
+    @keyframes boot-spin {
+      to { transform: rotate(360deg); }
+    }
+  </style>
+</head>
+<body>
+  <div id="boot">
+    <div class="boot-card">
+      <div class="boot-kicker">Doc2Graph</div>
+      <h1 class="boot-title">Loading local inspector</h1>
+      <p class="boot-copy">
+        The Flutter app is starting. If this screen stays visible, check the terminal running
+        <code>flutter run</code> for a startup error.
+      </p>
+      <div class="boot-row">
+        <div class="boot-spinner"></div>
+        <span>Preparing the interface...</span>
+      </div>
+    </div>
+  </div>
+  <!--
+    You can customize the "flutter_bootstrap.js" script.
+    This is useful to provide a custom configuration to the Flutter loader
+    or to give the user feedback during the initialization process.
+
+    For more details:
+    * https://docs.flutter.dev/platform-integration/web/initialization
+  -->
+  <script src="flutter_bootstrap.js" async></script>
+  <script>
+    window.addEventListener('flutter-first-frame', function () {
+      const boot = document.getElementById('boot');
+      if (boot) {
+        boot.remove();
+      }
+    });
+  </script>
+</body>
+</html>

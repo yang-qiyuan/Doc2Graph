@@ -1,0 +1,55 @@
+.DS_Store
+
+# Go
+backend/bin/
+backend/.cache/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Python
+extractor/.venv/
+extractor/__pycache__/
+extractor/.pytest_cache/
+extractor/**/__pycache__/
+extractor/**/*.pyc
+extractor/*.egg-info/
+extractor/dist/
+extractor/build/
+*.py[cod]
+*$py.class
+.Python
+
+# Flutter / Dart
+frontend/.dart_tool/
+frontend/build/
+frontend/.flutter-plugins
+frontend/.flutter-plugins-dependencies
+frontend/.packages
+frontend/pubspec.lock
+frontend/.metadata
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing
+.pytest_cache/
+coverage/
+*.cover
+.coverage
+htmlcov/
+
+# Logs
+*.log

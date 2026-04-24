@@ -1,0 +1,195 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://doc2graph.local/schemas/export.schema.json",
+  "title": "Doc2GraphExport",
+  "type": "object",
+  "required": [
+    "documents",
+    "entities",
+    "relations"
+  ],
+  "properties": {
+    "documents": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/document"
+      }
+    },
+    "entities": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/entity"
+      }
+    },
+    "relations": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/relation"
+      }
+    }
+  },
+  "$defs": {
+    "document": {
+      "type": "object",
+      "required": [
+        "id",
+        "source_type",
+        "title"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "source_type": {
+          "type": "string",
+          "enum": [
+            "markdown",
+            "pdf",
+            "url"
+          ]
+        },
+        "title": {
+          "type": "string"
+        },
+        "uri": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "mention": {
+      "type": "object",
+      "required": [
+        "doc_id",
+        "char_start",
+        "char_end"
+      ],
+      "properties": {
+        "doc_id": {
+          "type": "string"
+        },
+        "char_start": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "char_end": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "entity": {
+      "type": "object",
+      "required": [
+        "id",
+        "name",
+        "type",
+        "source_doc",
+        "mentions"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "Person",
+            "Organization",
+            "Place",
+            "Work",
+            "Time"
+          ]
+        },
+        "aliases": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "source_doc": {
+          "type": "string"
+        },
+        "mentions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/mention"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "relation": {
+      "type": "object",
+      "required": [
+        "id",
+        "subject",
+        "predicate",
+        "object",
+        "evidence",
+        "source_doc",
+        "char_start",
+        "char_end",
+        "confidence"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "subject": {
+          "type": "string"
+        },
+        "predicate": {
+          "type": "string",
+          "enum": [
+            "influenced_by",
+            "collaborated_with",
+            "family_of",
+            "student_of",
+            "worked_at",
+            "studied_at",
+            "founded",
+            "member_of",
+            "born_in",
+            "died_in",
+            "lived_in",
+            "authored",
+            "translated",
+            "edited",
+            "born_on",
+            "died_on"
+          ]
+        },
+        "object": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "string"
+        },
+        "source_doc": {
+          "type": "string"
+        },
+        "char_start": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "char_end": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}
