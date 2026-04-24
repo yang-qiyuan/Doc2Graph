@@ -893,7 +893,8 @@ class _GraphCanvasState extends State<_GraphCanvas> {
   late final TransformationController _controller;
   String? _lastFitSignature;
   GraphLayout? _cachedLayout;
-  String? _cachedLayoutSignature;
+  String? _lastBaseSignature;
+  Set<String> _lastExpandedEntityIds = {};
   RelationModel? _activeRelation;
   double _fittedScale = 0.45;
   Size? _lastViewportSize;
@@ -1039,17 +1040,42 @@ class _GraphCanvasState extends State<_GraphCanvas> {
         final width =
             constraints.maxWidth.isFinite ? constraints.maxWidth : 960.0;
         final height = math.max(680.0, width * 0.72);
-        final layoutSignature =
-            '${_signatureForEntities(widget.entities)}:${_signatureForRelations(widget.relations)}:${width.toStringAsFixed(1)}:${height.toStringAsFixed(1)}';
-        if (_cachedLayout == null ||
-            _cachedLayoutSignature != layoutSignature) {
+
+        // Separate Person entities from expanded metadata entities
+        final personEntities =
+            widget.entities.where((e) => e.type == 'Person').toList();
+        final nonPersonEntities =
+            widget.entities.where((e) => e.type != 'Person').toList();
+        final currentExpandedEntityIds =
+            nonPersonEntities.map((e) => e.id).toSet();
+
+        final baseSignature =
+            '${_signatureForEntities(personEntities)}:${width.toStringAsFixed(1)}:${height.toStringAsFixed(1)}';
+
+        // Check if only expanded entities changed (not the base Person network)
+        final baseChanged = _lastBaseSignature != baseSignature;
+        final onlyExpansionChanged = !baseChanged &&
+            _lastExpandedEntityIds != currentExpandedEntityIds;
+
+        if (_cachedLayout == null || baseChanged) {
+          // Full rebuild - base network changed
           _cachedLayout = GraphLayout.build(
             viewportWidth: width,
             viewportHeight: height,
             entities: widget.entities,
             relations: widget.relations,
           );
-          _cachedLayoutSignature = layoutSignature;
+          _lastBaseSignature = baseSignature;
+          _lastExpandedEntityIds = currentExpandedEntityIds;
+        } else if (onlyExpansionChanged) {
+          // Incremental update - only expansion changed
+          _cachedLayout = _cachedLayout!.updateWithExpansion(
+            newEntities: widget.entities,
+            newRelations: widget.relations,
+            previousExpandedIds: _lastExpandedEntityIds,
+            currentExpandedIds: currentExpandedEntityIds,
+          );
+          _lastExpandedEntityIds = currentExpandedEntityIds;
         }
         final layout = _cachedLayout!;
         _activeRelation ??=
@@ -2042,6 +2068,115 @@ class GraphLayout {
     );
   }
 
+  GraphLayout updateWithExpansion({
+    required List<EntityModel> newEntities,
+    required List<RelationModel> newRelations,
+    required Set<String> previousExpandedIds,
+    required Set<String> currentExpandedIds,
+  }) {
+    // Build map of current positions
+    final currentPositions = <String, Offset>{
+      for (final node in nodes) node.entity.id: node.center
+    };
+
+    // Find added and removed entities
+    final addedIds = currentExpandedIds.difference(previousExpandedIds);
+    final removedIds = previousExpandedIds.difference(currentExpandedIds);
+
+    // Build entity lookup
+    final entityById = {for (final entity in newEntities) entity.id: entity};
+
+    // Position new entities near their connected Person entities
+    for (final addedId in addedIds) {
+      final entity = entityById[addedId];
+      if (entity == null) continue;
+
+      // Find which Person entity this is connected to
+      Offset? parentPosition;
+      for (final relation in newRelations) {
+        if (relation.subject == addedId) {
+          final parentEntity = entityById[relation.object];
+          if (parentEntity != null && parentEntity.type == 'Person') {
+            parentPosition = currentPositions[relation.object];
+            break;
+          }
+        } else if (relation.object == addedId) {
+          final parentEntity = entityById[relation.subject];
+          if (parentEntity != null && parentEntity.type == 'Person') {
+            parentPosition = currentPositions[relation.subject];
+            break;
+          }
+        }
+      }
+
+      // Position near parent or at a default position
+      if (parentPosition != null) {
+        // Place in a circle around the parent
+        final angle = (addedId.hashCode % 360) * math.pi / 180;
+        final distance = 80.0;
+        final newX = (parentPosition.dx + math.cos(angle) * distance).clamp(48.0, canvasSize.width - 48);
+        final newY = (parentPosition.dy + math.sin(angle) * distance).clamp(48.0, canvasSize.height - 48);
+        currentPositions[addedId] = Offset(newX, newY);
+      } else {
+        // Default position at canvas center
+        currentPositions[addedId] = Offset(
+          canvasSize.width / 2,
+          canvasSize.height / 2,
+        );
+      }
+    }
+
+    // Remove positions for removed entities
+    for (final removedId in removedIds) {
+      currentPositions.remove(removedId);
+    }
+
+    // Build new nodes list
+    final newNodes = <GraphNode>[];
+    for (final entity in newEntities) {
+      final position = currentPositions[entity.id];
+      if (position != null) {
+        newNodes.add(
+          GraphNode(
+            entity: entity,
+            center: position,
+            radius: switch (entity.type) {
+              'Person' => 28,
+              'MetaGroup' => 22,
+              _ => 14,
+            },
+            showLabel: entity.type == 'Person' || entity.type == 'MetaGroup',
+          ),
+        );
+      }
+    }
+
+    // Build new edges list
+    final newEdges = <GraphEdge>[];
+    for (final relation in newRelations) {
+      final from = currentPositions[relation.subject];
+      final to = currentPositions[relation.object];
+      final subject = entityById[relation.subject];
+      final object = entityById[relation.object];
+      if (from != null && to != null && subject != null && object != null) {
+        newEdges.add(
+          GraphEdge(
+            relation: relation,
+            from: from,
+            to: to,
+            color: predicateColor(relation.predicate),
+          ),
+        );
+      }
+    }
+
+    return GraphLayout(
+      nodes: newNodes,
+      edges: newEdges,
+      canvasSize: canvasSize,
+    );
+  }
+
   GraphEdge? edgeAt(Offset position) {
     for (final edge in edges) {
       if (_distanceToSegment(position, edge.from, edge.to) <= 14) {
@@ -2302,19 +2437,6 @@ int _signatureForEntities(List<EntityModel> entities) {
     entities.length,
     (hash, entity) =>
         Object.hash(hash, entity.id, entity.type, entity.sourceDoc),
-  );
-}
-
-int _signatureForRelations(List<RelationModel> relations) {
-  return relations.fold<int>(
-    relations.length,
-    (hash, relation) => Object.hash(
-      hash,
-      relation.id,
-      relation.subject,
-      relation.predicate,
-      relation.object,
-    ),
   );
 }
 
