@@ -112,6 +112,10 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
     if (_job == null) {
       return;
     }
+    if (_expandedEntityDetails.containsKey(entity.id)) {
+      _collapseEntity(entity.id);
+      return;
+    }
     if (entity.display?.role == 'summary') {
       setState(() {
         _selectedEntity = EntityDetailModel(
@@ -137,9 +141,11 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
         entity.id,
       );
       setState(() {
-        _expandedEntityDetails.clear();
         _selectedEntity = detailedEntity;
-        _expandedEntityDetails[entity.id] = detailedEntity;
+        if (_graph != null && isMajorGraphEntity(entity, _graph!.documents)) {
+          _expandedEntityDetails.clear();
+          _expandedEntityDetails[entity.id] = detailedEntity;
+        }
         _predicateFilter = 'all';
       });
     } catch (error) {
@@ -2233,11 +2239,21 @@ bool isMajorGraphEntity(EntityModel entity, List<DocumentModel> documents) {
   if (entity.type != 'Person') {
     return false;
   }
-  return documents.any(
-    (document) =>
-        document.id == entity.sourceDoc &&
-        normalizeGraphLabel(document.title) == normalizeGraphLabel(entity.name),
-  );
+  final names = {
+    normalizeGraphLabel(entity.name),
+    ...entity.aliases.map(normalizeGraphLabel),
+  };
+  for (final mention in entity.mentions) {
+    for (final document in documents) {
+      if (document.id != mention.docId) {
+        continue;
+      }
+      if (names.contains(normalizeGraphLabel(document.title))) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 String normalizeGraphLabel(String value) {
@@ -2546,6 +2562,7 @@ class EntityModel {
     required this.type,
     required this.sourceDoc,
     required this.mentions,
+    this.aliases = const <String>[],
     this.display,
   });
 
@@ -2554,6 +2571,7 @@ class EntityModel {
   final String type;
   final String sourceDoc;
   final List<MentionModel> mentions;
+  final List<String> aliases;
   final EntityDisplayModel? display;
 
   factory EntityModel.fromJson(Map<String, dynamic> json) {
@@ -2564,6 +2582,9 @@ class EntityModel {
       sourceDoc: json['source_doc'] as String? ?? '',
       mentions: ((json['mentions'] as List<dynamic>? ?? <dynamic>[]))
           .map((item) => MentionModel.fromJson(item as Map<String, dynamic>))
+          .toList(),
+      aliases: ((json['aliases'] as List<dynamic>? ?? <dynamic>[]))
+          .map((item) => item as String)
           .toList(),
       display: json['display'] == null
           ? null

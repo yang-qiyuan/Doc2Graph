@@ -72,6 +72,25 @@ func TestBuildDisplayGraphCollapsedHidesSecondaryPeople(t *testing.T) {
 	}
 }
 
+func TestBuildDisplayGraphCollapsedUsesMentionsToDetectPrimaryPeople(t *testing.T) {
+	result := testExtractionResult()
+	for index := range result.Entities {
+		if result.Entities[index].ID == "P2" {
+			result.Entities[index].SourceDoc = "doc-1"
+		}
+	}
+
+	graph := buildDisplayGraph(result, false)
+
+	visibleIDs := make(map[string]struct{}, len(graph.Entities))
+	for _, entity := range graph.Entities {
+		visibleIDs[entity.ID] = struct{}{}
+	}
+	if _, ok := visibleIDs["P2"]; !ok {
+		t.Fatal("expected primary person to remain visible even when source_doc is not its title document")
+	}
+}
+
 func TestBuildDisplayGraphExpandedReturnsUnderlyingMetadataLeaves(t *testing.T) {
 	result := testExtractionResult()
 

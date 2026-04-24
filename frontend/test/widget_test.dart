@@ -23,27 +23,36 @@ void main() {
       id: 'E1',
       name: 'Martin Luther King Jr.',
       type: 'Person',
-      sourceDoc: 'doc-1',
-      mentions: const [],
+      sourceDoc: 'normalized-source',
+      mentions: [MentionModel(docId: 'doc-1', charStart: 0, charEnd: 22)],
     );
     final secondaryPerson = EntityModel(
       id: 'E2',
       name: 'Morehouse College',
       type: 'Person',
       sourceDoc: 'doc-1',
-      mentions: const [],
+      mentions: [MentionModel(docId: 'doc-1', charStart: 40, charEnd: 57)],
     );
     final place = EntityModel(
       id: 'E3',
       name: 'Atlanta',
       type: 'Place',
       sourceDoc: 'doc-1',
-      mentions: const [],
+      mentions: [MentionModel(docId: 'doc-1', charStart: 80, charEnd: 87)],
+    );
+    final aliasedPrimary = EntityModel(
+      id: 'E4',
+      name: 'Michael King Jr.',
+      type: 'Person',
+      sourceDoc: 'doc-2',
+      mentions: [MentionModel(docId: 'doc-1', charStart: 0, charEnd: 22)],
+      aliases: const ['Martin Luther King Jr.'],
     );
 
     expect(isMajorGraphEntity(primary, documents), isTrue);
     expect(isMajorGraphEntity(secondaryPerson, documents), isFalse);
     expect(isMajorGraphEntity(place, documents), isFalse);
+    expect(isMajorGraphEntity(aliasedPrimary, documents), isTrue);
   });
 
   test('stale relation predicate filters fall back to all relations', () {

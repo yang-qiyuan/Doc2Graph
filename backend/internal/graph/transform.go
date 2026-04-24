@@ -193,8 +193,22 @@ func (t displayTransform) isPrimaryEntity(entity domain.Entity) bool {
 	if entity.Type != "Person" {
 		return false
 	}
-	title := t.docTitleByID[entity.SourceDoc]
-	return normalizeGraphLabel(title) == normalizeGraphLabel(entity.Name)
+	names := make(map[string]struct{}, len(entity.Aliases)+1)
+	names[normalizeGraphLabel(entity.Name)] = struct{}{}
+	for _, alias := range entity.Aliases {
+		names[normalizeGraphLabel(alias)] = struct{}{}
+	}
+
+	for _, mention := range entity.Mentions {
+		title := normalizeGraphLabel(t.docTitleByID[mention.DocID])
+		if title == "" {
+			continue
+		}
+		if _, ok := names[title]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizeGraphLabel(value string) string {
