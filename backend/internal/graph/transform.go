@@ -162,23 +162,19 @@ func (t displayTransform) decorateRelation(
 }
 
 func (t displayTransform) shouldHideEntity(entity domain.Entity) (bool, string) {
+	if entity.Type == "Person" {
+		return false, ""
+	}
+
 	switch entity.Type {
 	case "Time":
-		if t.degreeByEntityID[entity.ID] >= 1 {
-			return true, "metadata_time_leaf"
-		}
+		return true, "metadata_time_leaf"
 	case "Place":
-		if t.degreeByEntityID[entity.ID] == 1 && uniqueMentionDocs(entity.Mentions) <= 1 {
-			return true, "metadata_place_leaf"
-		}
+		return true, "metadata_place_leaf"
 	case "Organization":
-		if t.degreeByEntityID[entity.ID] == 1 && uniqueMentionDocs(entity.Mentions) <= 1 {
-			return true, "metadata_org_leaf"
-		}
+		return true, "metadata_org_leaf"
 	case "Work":
-		if t.degreeByEntityID[entity.ID] == 1 && uniqueMentionDocs(entity.Mentions) <= 1 {
-			return true, "metadata_work_leaf"
-		}
+		return true, "metadata_work_leaf"
 	}
 
 	return false, ""
