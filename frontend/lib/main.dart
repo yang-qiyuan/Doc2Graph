@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:math' as math;
 
+import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
@@ -54,6 +55,7 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
   double _minConfidence = 0.0;
   String _predicateFilter = 'all';
   final Map<String, EntityDetailModel> _expandedEntityDetails = {};
+  List<UploadDocumentDraft> _uploadDrafts = const <UploadDocumentDraft>[];
 
   @override
   void initState() {
@@ -106,6 +108,102 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
         });
       }
     }
+  }
+
+  Future<void> _pickMarkdownFiles() async {
+    setState(() {
+      _error = null;
+    });
+
+    try {
+      const markdownGroup = XTypeGroup(
+        label: 'Markdown',
+        extensions: <String>['md', 'markdown', 'txt'],
+      );
+      final files = await openFiles(
+        acceptedTypeGroups: const <XTypeGroup>[markdownGroup],
+      );
+      if (files.isEmpty) {
+        return;
+      }
+      if (files.length > 30) {
+        setState(() {
+          _error = 'Choose at most 30 files. You selected ${files.length}.';
+        });
+        return;
+      }
+
+      final drafts = <UploadDocumentDraft>[];
+      for (final file in files) {
+        final content = await file.readAsString();
+        drafts.add(
+          buildUploadDraft(
+            filename: file.name,
+            content: content,
+            index: drafts.length,
+          ),
+        );
+      }
+
+      setState(() {
+        _uploadDrafts = drafts;
+      });
+    } catch (error) {
+      setState(() {
+        _error = error.toString();
+      });
+    }
+  }
+
+  Future<void> _runUploadedFiles() async {
+    if (_uploadDrafts.isEmpty) {
+      setState(() {
+        _error = 'Pick one or more Markdown files before starting a job.';
+      });
+      return;
+    }
+
+    setState(() {
+      _isLoading = true;
+      _error = null;
+      _selectedEntity = null;
+      _selectedEvidence = null;
+      _predicateFilter = 'all';
+      _expandedEntityDetails.clear();
+    });
+    _hoveredEntity.value = null;
+    _hoveredRelation.value = null;
+
+    try {
+      final baseUrl = _normalizedBaseUrl;
+      final job = await _api.createUploadJob(baseUrl, _uploadDrafts);
+      final graph = await _api.fetchGraph(
+        baseUrl,
+        job.job.id,
+        expandMetadata: false,
+      );
+      setState(() {
+        _job = job;
+        _graph = graph;
+      });
+    } catch (error) {
+      setState(() {
+        _error = error.toString();
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
+    }
+  }
+
+  void _clearUploadSelection() {
+    setState(() {
+      _uploadDrafts = const <UploadDocumentDraft>[];
+      _error = null;
+    });
   }
 
   Future<void> _selectEntity(EntityModel entity) async {
@@ -295,9 +393,11 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
         }
       } else {
         // For Person to non-Person relations, show only if the Person is expanded
-        if (subjectType == 'Person' && expandedPersonIds.contains(relation.subject)) {
+        if (subjectType == 'Person' &&
+            expandedPersonIds.contains(relation.subject)) {
           relationById[relation.id] = relation;
-        } else if (objectType == 'Person' && expandedPersonIds.contains(relation.object)) {
+        } else if (objectType == 'Person' &&
+            expandedPersonIds.contains(relation.object)) {
           relationById[relation.id] = relation;
         }
       }
@@ -386,6 +486,7 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
             graph: _graph,
             filteredEntities: _filteredEntities,
             filteredRelations: _filteredRelations,
+            uploadDrafts: _uploadDrafts,
             minConfidence: _minConfidence,
             predicateFilter: _effectivePredicateFilter,
             availablePredicates: _availablePredicates,
@@ -401,6 +502,9 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
               });
             },
             onCollapseAllEntities: _collapseAllEntities,
+            onPickMarkdownFiles: _pickMarkdownFiles,
+            onRunUploadedFiles: _runUploadedFiles,
+            onClearUploadSelection: _clearUploadSelection,
             onRunWikipediaFixtures: _runWikipediaFixtures,
             onSelectEntity: _selectEntity,
             onSelectRelation: _selectRelation,
@@ -466,6 +570,7 @@ class _MainPanel extends StatelessWidget {
     required this.graph,
     required this.filteredEntities,
     required this.filteredRelations,
+    required this.uploadDrafts,
     required this.minConfidence,
     required this.predicateFilter,
     required this.availablePredicates,
@@ -473,6 +578,9 @@ class _MainPanel extends StatelessWidget {
     required this.onMinConfidenceChanged,
     required this.onPredicateFilterChanged,
     required this.onCollapseAllEntities,
+    required this.onPickMarkdownFiles,
+    required this.onRunUploadedFiles,
+    required this.onClearUploadSelection,
     required this.onRunWikipediaFixtures,
     required this.onSelectEntity,
     required this.onSelectRelation,
@@ -486,6 +594,7 @@ class _MainPanel extends StatelessWidget {
   final GraphData? graph;
   final List<EntityModel> filteredEntities;
   final List<RelationModel> filteredRelations;
+  final List<UploadDocumentDraft> uploadDrafts;
   final double minConfidence;
   final String predicateFilter;
   final List<String> availablePredicates;
@@ -493,6 +602,9 @@ class _MainPanel extends StatelessWidget {
   final ValueChanged<double> onMinConfidenceChanged;
   final ValueChanged<String> onPredicateFilterChanged;
   final VoidCallback onCollapseAllEntities;
+  final Future<void> Function() onPickMarkdownFiles;
+  final Future<void> Function() onRunUploadedFiles;
+  final VoidCallback onClearUploadSelection;
   final Future<void> Function() onRunWikipediaFixtures;
   final ValueChanged<EntityModel> onSelectEntity;
   final ValueChanged<RelationModel> onSelectRelation;
@@ -505,57 +617,15 @@ class _MainPanel extends StatelessWidget {
       children: [
         const _HeroHeader(),
         const SizedBox(height: 16),
-        Card(
-          child: Padding(
-            padding: const EdgeInsets.all(20),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text('Backend', style: Theme.of(context).textTheme.titleLarge),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: baseUrlController,
-                  decoration: const InputDecoration(
-                    labelText: 'API Base URL',
-                    hintText: 'http://127.0.0.1:8080',
-                    border: OutlineInputBorder(),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                Wrap(
-                  spacing: 12,
-                  runSpacing: 12,
-                  crossAxisAlignment: WrapCrossAlignment.center,
-                  children: [
-                    FilledButton.icon(
-                      onPressed: isLoading ? null : onRunWikipediaFixtures,
-                      icon: const Icon(Icons.play_arrow),
-                      label: const Text('Run Wikipedia Fixture Job'),
-                    ),
-                    if (isLoading)
-                      const SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      ),
-                  ],
-                ),
-                const SizedBox(height: 12),
-                Text(
-                  'Launches the bundled 30-page sample set and reloads the graph canvas from the backend APIs.',
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
-                if (error != null) ...[
-                  const SizedBox(height: 12),
-                  Text(
-                    error!,
-                    style:
-                        TextStyle(color: Theme.of(context).colorScheme.error),
-                  ),
-                ],
-              ],
-            ),
-          ),
+        _UploadPanel(
+          baseUrlController: baseUrlController,
+          uploadDrafts: uploadDrafts,
+          isLoading: isLoading,
+          error: error,
+          onPickMarkdownFiles: onPickMarkdownFiles,
+          onRunUploadedFiles: onRunUploadedFiles,
+          onClearUploadSelection: onClearUploadSelection,
+          onRunWikipediaFixtures: onRunWikipediaFixtures,
         ),
         if (job != null) ...[
           const SizedBox(height: 16),
@@ -612,6 +682,133 @@ class _MainPanel extends StatelessWidget {
           ),
         ],
       ],
+    );
+  }
+}
+
+class _UploadPanel extends StatelessWidget {
+  const _UploadPanel({
+    required this.baseUrlController,
+    required this.uploadDrafts,
+    required this.isLoading,
+    required this.error,
+    required this.onPickMarkdownFiles,
+    required this.onRunUploadedFiles,
+    required this.onClearUploadSelection,
+    required this.onRunWikipediaFixtures,
+  });
+
+  final TextEditingController baseUrlController;
+  final List<UploadDocumentDraft> uploadDrafts;
+  final bool isLoading;
+  final String? error;
+  final Future<void> Function() onPickMarkdownFiles;
+  final Future<void> Function() onRunUploadedFiles;
+  final VoidCallback onClearUploadSelection;
+  final Future<void> Function() onRunWikipediaFixtures;
+
+  @override
+  Widget build(BuildContext context) {
+    final totalChars =
+        uploadDrafts.fold<int>(0, (sum, draft) => sum + draft.content.length);
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Documents', style: Theme.of(context).textTheme.titleLarge),
+            const SizedBox(height: 12),
+            TextField(
+              controller: baseUrlController,
+              decoration: const InputDecoration(
+                labelText: 'API Base URL',
+                hintText: 'http://127.0.0.1:8080',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 16),
+            Wrap(
+              spacing: 12,
+              runSpacing: 12,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                FilledButton.icon(
+                  onPressed: isLoading ? null : onPickMarkdownFiles,
+                  icon: const Icon(Icons.upload_file),
+                  label: const Text('Choose Markdown Files'),
+                ),
+                FilledButton.icon(
+                  onPressed: isLoading || uploadDrafts.isEmpty
+                      ? null
+                      : onRunUploadedFiles,
+                  icon: const Icon(Icons.account_tree),
+                  label: const Text('Build Graph From Files'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: isLoading || uploadDrafts.isEmpty
+                      ? null
+                      : onClearUploadSelection,
+                  icon: const Icon(Icons.clear),
+                  label: const Text('Clear'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: isLoading ? null : onRunWikipediaFixtures,
+                  icon: const Icon(Icons.science),
+                  label: const Text('Run Test Fixture'),
+                ),
+                if (isLoading)
+                  const SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+              ],
+            ),
+            if (uploadDrafts.isNotEmpty) ...[
+              const SizedBox(height: 16),
+              Text(
+                '${uploadDrafts.length} selected files • $totalChars characters',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+              const SizedBox(height: 8),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxHeight: 180),
+                child: ListView.separated(
+                  shrinkWrap: true,
+                  itemCount: uploadDrafts.length,
+                  separatorBuilder: (_, __) => const Divider(height: 1),
+                  itemBuilder: (context, index) {
+                    final draft = uploadDrafts[index];
+                    return ListTile(
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                      leading: const Icon(Icons.description_outlined),
+                      title: Text(
+                        draft.title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      subtitle: Text(
+                        '${draft.filename} • ${draft.content.length} chars',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ],
+            if (error != null) ...[
+              const SizedBox(height: 12),
+              Text(
+                error!,
+                style: TextStyle(color: Theme.of(context).colorScheme.error),
+              ),
+            ],
+          ],
+        ),
+      ),
     );
   }
 }
@@ -1054,8 +1251,8 @@ class _GraphCanvasState extends State<_GraphCanvas> {
 
         // Check if only expanded entities changed (not the base Person network)
         final baseChanged = _lastBaseSignature != baseSignature;
-        final onlyExpansionChanged = !baseChanged &&
-            _lastExpandedEntityIds != currentExpandedEntityIds;
+        final onlyExpansionChanged =
+            !baseChanged && _lastExpandedEntityIds != currentExpandedEntityIds;
 
         if (_cachedLayout == null || baseChanged) {
           // Full rebuild - base network changed
@@ -2114,8 +2311,10 @@ class GraphLayout {
         // Place in a circle around the parent
         final angle = (addedId.hashCode % 360) * math.pi / 180;
         final distance = 80.0;
-        final newX = (parentPosition.dx + math.cos(angle) * distance).clamp(48.0, canvasSize.width - 48);
-        final newY = (parentPosition.dy + math.sin(angle) * distance).clamp(48.0, canvasSize.height - 48);
+        final newX = (parentPosition.dx + math.cos(angle) * distance)
+            .clamp(48.0, canvasSize.width - 48);
+        final newY = (parentPosition.dy + math.sin(angle) * distance)
+            .clamp(48.0, canvasSize.height - 48);
         currentPositions[addedId] = Offset(newX, newY);
       } else {
         // Default position at canvas center
@@ -2447,6 +2646,20 @@ class Doc2GraphApi {
     return _decodeResponse(response, JobResponse.fromJson);
   }
 
+  Future<JobResponse> createUploadJob(
+    String baseUrl,
+    List<UploadDocumentDraft> drafts,
+  ) async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/api/v1/jobs'),
+      headers: const {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'documents': drafts.map((draft) => draft.toJson()).toList(),
+      }),
+    );
+    return _decodeResponse(response, JobResponse.fromJson);
+  }
+
   Future<GraphData> fetchGraph(
     String baseUrl,
     String jobId, {
@@ -2503,6 +2716,70 @@ class Doc2GraphApi {
     }
     return parser(body);
   }
+}
+
+class UploadDocumentDraft {
+  const UploadDocumentDraft({
+    required this.id,
+    required this.title,
+    required this.filename,
+    required this.content,
+  });
+
+  final String id;
+  final String title;
+  final String filename;
+  final String content;
+
+  Map<String, dynamic> toJson() {
+    return {
+      'id': id,
+      'title': title,
+      'source_type': 'markdown',
+      'content': content,
+      'uri': filename,
+    };
+  }
+}
+
+UploadDocumentDraft buildUploadDraft({
+  required String filename,
+  required String content,
+  required int index,
+}) {
+  final basename = filename.split(RegExp(r'[/\\]')).last;
+  final title = inferMarkdownTitle(basename, content);
+  return UploadDocumentDraft(
+    id: buildUploadDocumentID(basename, index),
+    title: title,
+    filename: basename,
+    content: content,
+  );
+}
+
+String inferMarkdownTitle(String filename, String content) {
+  for (final line in const LineSplitter().convert(content)) {
+    final trimmed = line.trim();
+    if (trimmed.startsWith('#')) {
+      final title = trimmed.replaceFirst(RegExp(r'^#+\s*'), '').trim();
+      if (title.isNotEmpty) {
+        return title;
+      }
+    }
+  }
+  final withoutExtension = filename.replaceFirst(RegExp(r'\.[^.]+$'), '');
+  final normalized = withoutExtension.replaceAll(RegExp(r'[_-]+'), ' ').trim();
+  return normalized.isEmpty ? filename : normalized;
+}
+
+String buildUploadDocumentID(String filename, int index) {
+  final withoutExtension = filename.replaceFirst(RegExp(r'\.[^.]+$'), '');
+  final slug = withoutExtension
+      .toLowerCase()
+      .replaceAll(RegExp(r'[^a-z0-9]+'), '-')
+      .replaceAll(RegExp(r'^-+|-+$'), '');
+  final suffix = (index + 1).toString().padLeft(3, '0');
+  return 'upload-$suffix-${slug.isEmpty ? 'document' : slug}';
 }
 
 class JobResponse {

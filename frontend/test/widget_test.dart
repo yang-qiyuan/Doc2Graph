@@ -7,7 +7,8 @@ void main() {
     await tester.pumpWidget(const Doc2GraphApp());
 
     expect(find.text('Doc2Graph Local Inspector'), findsOneWidget);
-    expect(find.text('Run Wikipedia Fixture Job'), findsOneWidget);
+    expect(find.text('Choose Markdown Files'), findsOneWidget);
+    expect(find.text('Run Test Fixture'), findsOneWidget);
   });
 
   test('major graph entities are primary document people only', () {
@@ -64,5 +65,29 @@ void main() {
       effectivePredicateFilter('born_in', const ['all', 'born_in']),
       'born_in',
     );
+  });
+
+  test('upload drafts infer stable ids and titles', () {
+    final draft = buildUploadDraft(
+      filename: 'Ada_Lovelace.md',
+      content: '# Ada Lovelace\n\nAda was a mathematician.',
+      index: 0,
+    );
+
+    expect(draft.id, 'upload-001-ada-lovelace');
+    expect(draft.title, 'Ada Lovelace');
+    expect(draft.toJson()['source_type'], 'markdown');
+    expect(draft.toJson()['content'], contains('mathematician'));
+  });
+
+  test('upload draft title falls back to filename', () {
+    final draft = buildUploadDraft(
+      filename: 'Isaac-Newton.markdown',
+      content: 'No heading here.',
+      index: 4,
+    );
+
+    expect(draft.id, 'upload-005-isaac-newton');
+    expect(draft.title, 'Isaac Newton');
   });
 }
