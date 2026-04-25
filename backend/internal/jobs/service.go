@@ -38,6 +38,11 @@ func (s *Service) CreateAndProcess(ctx context.Context, documents []domain.Docum
 		return domain.Job{}, fmt.Errorf("validate job %s result: %w", job.ID, err)
 	}
 
+	// Clear database before storing new results (for prototype testing)
+	if err := s.neo4jStore.ClearDatabase(ctx); err != nil {
+		log.Printf("Warning: failed to clear Neo4j database: %v", err)
+	}
+
 	// Store in Neo4j
 	if err := s.neo4jStore.StoreExtractionResult(ctx, job.ID, &result); err != nil {
 		log.Printf("Warning: failed to store extraction result in Neo4j: %v", err)

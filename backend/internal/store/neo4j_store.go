@@ -44,6 +44,28 @@ func (s *Neo4jStore) Close(ctx context.Context) error {
 	return s.driver.Close(ctx)
 }
 
+// ClearDatabase removes all nodes and relationships from the database
+// This is useful for testing/prototype scenarios where you want a clean slate
+func (s *Neo4jStore) ClearDatabase(ctx context.Context) error {
+	session := s.driver.NewSession(ctx, neo4j.SessionConfig{
+		DatabaseName: s.db,
+	})
+	defer session.Close(ctx)
+
+	_, err := session.ExecuteWrite(ctx, func(tx neo4j.ManagedTransaction) (any, error) {
+		// Delete all nodes and relationships
+		_, err := tx.Run(ctx, "MATCH (n) DETACH DELETE n", nil)
+		return nil, err
+	})
+
+	if err != nil {
+		return fmt.Errorf("failed to clear database: %w", err)
+	}
+
+	log.Printf("Cleared all data from Neo4j database")
+	return nil
+}
+
 // StoreExtractionResult stores the extraction result in Neo4j
 func (s *Neo4jStore) StoreExtractionResult(ctx context.Context, jobID string, result *domain.ExtractionResult) error {
 	session := s.driver.NewSession(ctx, neo4j.SessionConfig{
