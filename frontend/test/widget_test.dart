@@ -130,4 +130,15 @@ void main() {
     expect(issues.single.filename, 'Selection');
     expect(issues.single.message, contains('Choose at most 30 files'));
   });
+
+  test('processing stages expose user-facing labels', () {
+    expect(processingStageLabel(ProcessingStage.readingFiles), 'Reading files');
+    expect(processingStageLabel(ProcessingStage.uploadingDocuments),
+        'Uploading documents');
+    expect(processingStageLabel(ProcessingStage.extractingGraph),
+        'Extracting graph');
+    expect(processingStageLabel(ProcessingStage.loadingGraph), 'Loading graph');
+    expect(processingStageLabel(ProcessingStage.complete), 'Complete');
+    expect(processingStageLabel(ProcessingStage.failed), 'Needs attention');
+  });
 }

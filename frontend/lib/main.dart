@@ -57,6 +57,7 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
   final Map<String, EntityDetailModel> _expandedEntityDetails = {};
   List<UploadDocumentDraft> _uploadDrafts = const <UploadDocumentDraft>[];
   List<UploadSelectionIssue> _uploadIssues = const <UploadSelectionIssue>[];
+  ProcessingStage _processingStage = ProcessingStage.idle;
 
   @override
   void initState() {
@@ -83,6 +84,7 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
       _predicateFilter = 'all';
       _expandedEntityDetails.clear();
       _uploadIssues = const <UploadSelectionIssue>[];
+      _processingStage = ProcessingStage.extractingGraph;
     });
     _hoveredEntity.value = null;
     _hoveredRelation.value = null;
@@ -90,6 +92,9 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
     try {
       final baseUrl = _normalizedBaseUrl;
       final job = await _api.createWikipediaFixtureJob(baseUrl);
+      setState(() {
+        _processingStage = ProcessingStage.loadingGraph;
+      });
       final graph = await _api.fetchGraph(
         baseUrl,
         job.job.id,
@@ -98,10 +103,12 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
       setState(() {
         _job = job;
         _graph = graph;
+        _processingStage = ProcessingStage.complete;
       });
     } catch (error) {
       setState(() {
         _error = error.toString();
+        _processingStage = ProcessingStage.failed;
       });
     } finally {
       if (mounted) {
@@ -115,6 +122,7 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
   Future<void> _pickMarkdownFiles() async {
     setState(() {
       _error = null;
+      _processingStage = ProcessingStage.readingFiles;
     });
 
     try {
@@ -126,6 +134,11 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
         acceptedTypeGroups: const <XTypeGroup>[markdownGroup],
       );
       if (files.isEmpty) {
+        setState(() {
+          _processingStage = _uploadDrafts.isEmpty
+              ? ProcessingStage.idle
+              : ProcessingStage.readyToBuild;
+        });
         return;
       }
       final drafts = <UploadDocumentDraft>[];
@@ -153,10 +166,14 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
       setState(() {
         _uploadDrafts = drafts.take(30).toList();
         _uploadIssues = issues;
+        _processingStage = issues.isEmpty
+            ? ProcessingStage.readyToBuild
+            : ProcessingStage.failed;
       });
     } catch (error) {
       setState(() {
         _error = error.toString();
+        _processingStage = ProcessingStage.failed;
       });
     }
   }
@@ -169,6 +186,7 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
         _error = _uploadDrafts.isEmpty
             ? 'Pick one or more Markdown files before starting a job.'
             : 'Resolve upload validation issues before starting a job.';
+        _processingStage = ProcessingStage.failed;
       });
       return;
     }
@@ -181,13 +199,20 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
       _predicateFilter = 'all';
       _expandedEntityDetails.clear();
       _uploadIssues = const <UploadSelectionIssue>[];
+      _processingStage = ProcessingStage.uploadingDocuments;
     });
     _hoveredEntity.value = null;
     _hoveredRelation.value = null;
 
     try {
       final baseUrl = _normalizedBaseUrl;
+      setState(() {
+        _processingStage = ProcessingStage.extractingGraph;
+      });
       final job = await _api.createUploadJob(baseUrl, _uploadDrafts);
+      setState(() {
+        _processingStage = ProcessingStage.loadingGraph;
+      });
       final graph = await _api.fetchGraph(
         baseUrl,
         job.job.id,
@@ -196,10 +221,12 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
       setState(() {
         _job = job;
         _graph = graph;
+        _processingStage = ProcessingStage.complete;
       });
     } catch (error) {
       setState(() {
         _error = error.toString();
+        _processingStage = ProcessingStage.failed;
       });
     } finally {
       if (mounted) {
@@ -215,6 +242,7 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
       _uploadDrafts = const <UploadDocumentDraft>[];
       _uploadIssues = const <UploadSelectionIssue>[];
       _error = null;
+      _processingStage = ProcessingStage.idle;
     });
   }
 
@@ -500,6 +528,7 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
             filteredRelations: _filteredRelations,
             uploadDrafts: _uploadDrafts,
             uploadIssues: _uploadIssues,
+            processingStage: _processingStage,
             minConfidence: _minConfidence,
             predicateFilter: _effectivePredicateFilter,
             availablePredicates: _availablePredicates,
@@ -585,6 +614,7 @@ class _MainPanel extends StatelessWidget {
     required this.filteredRelations,
     required this.uploadDrafts,
     required this.uploadIssues,
+    required this.processingStage,
     required this.minConfidence,
     required this.predicateFilter,
     required this.availablePredicates,
@@ -610,6 +640,7 @@ class _MainPanel extends StatelessWidget {
   final List<RelationModel> filteredRelations;
   final List<UploadDocumentDraft> uploadDrafts;
   final List<UploadSelectionIssue> uploadIssues;
+  final ProcessingStage processingStage;
   final double minConfidence;
   final String predicateFilter;
   final List<String> availablePredicates;
@@ -636,6 +667,7 @@ class _MainPanel extends StatelessWidget {
           baseUrlController: baseUrlController,
           uploadDrafts: uploadDrafts,
           uploadIssues: uploadIssues,
+          processingStage: processingStage,
           isLoading: isLoading,
           error: error,
           onPickMarkdownFiles: onPickMarkdownFiles,
@@ -707,6 +739,7 @@ class _UploadPanel extends StatelessWidget {
     required this.baseUrlController,
     required this.uploadDrafts,
     required this.uploadIssues,
+    required this.processingStage,
     required this.isLoading,
     required this.error,
     required this.onPickMarkdownFiles,
@@ -718,6 +751,7 @@ class _UploadPanel extends StatelessWidget {
   final TextEditingController baseUrlController;
   final List<UploadDocumentDraft> uploadDrafts;
   final List<UploadSelectionIssue> uploadIssues;
+  final ProcessingStage processingStage;
   final bool isLoading;
   final String? error;
   final Future<void> Function() onPickMarkdownFiles;
@@ -784,6 +818,12 @@ class _UploadPanel extends StatelessWidget {
                     child: CircularProgressIndicator(strokeWidth: 2),
                   ),
               ],
+            ),
+            const SizedBox(height: 16),
+            _ProcessingStatus(
+              stage: processingStage,
+              isActive:
+                  isLoading || processingStage == ProcessingStage.readingFiles,
             ),
             if (uploadDrafts.isNotEmpty) ...[
               const SizedBox(height: 16),
@@ -860,6 +900,62 @@ class _UploadPanel extends StatelessWidget {
             ],
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _ProcessingStatus extends StatelessWidget {
+  const _ProcessingStatus({
+    required this.stage,
+    required this.isActive,
+  });
+
+  final ProcessingStage stage;
+  final bool isActive;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: colorScheme.surfaceContainerHighest.withValues(alpha: 0.55),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: colorScheme.outlineVariant),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                processingStageIcon(stage),
+                size: 18,
+                color: processingStageColor(stage, colorScheme),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  processingStageLabel(stage),
+                  style: const TextStyle(fontWeight: FontWeight.w700),
+                ),
+              ),
+            ],
+          ),
+          if (processingStageDescription(stage).isNotEmpty) ...[
+            const SizedBox(height: 4),
+            Text(
+              processingStageDescription(stage),
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ],
+          if (isActive) ...[
+            const SizedBox(height: 10),
+            const LinearProgressIndicator(),
+          ],
+        ],
       ),
     );
   }
@@ -2802,6 +2898,71 @@ class UploadSelectionIssue {
 
   final String filename;
   final String message;
+}
+
+enum ProcessingStage {
+  idle,
+  readingFiles,
+  readyToBuild,
+  uploadingDocuments,
+  extractingGraph,
+  loadingGraph,
+  complete,
+  failed,
+}
+
+String processingStageLabel(ProcessingStage stage) {
+  return switch (stage) {
+    ProcessingStage.idle => 'Select Markdown files',
+    ProcessingStage.readingFiles => 'Reading files',
+    ProcessingStage.readyToBuild => 'Ready to build',
+    ProcessingStage.uploadingDocuments => 'Uploading documents',
+    ProcessingStage.extractingGraph => 'Extracting graph',
+    ProcessingStage.loadingGraph => 'Loading graph',
+    ProcessingStage.complete => 'Complete',
+    ProcessingStage.failed => 'Needs attention',
+  };
+}
+
+String processingStageDescription(ProcessingStage stage) {
+  return switch (stage) {
+    ProcessingStage.idle =>
+      'Choose up to 30 Markdown files or run the test fixture.',
+    ProcessingStage.readingFiles =>
+      'Reading local files and preparing upload payloads.',
+    ProcessingStage.readyToBuild => 'Selected files passed local validation.',
+    ProcessingStage.uploadingDocuments =>
+      'Sending selected documents to the backend.',
+    ProcessingStage.extractingGraph =>
+      'The backend is processing documents and extracting relationships.',
+    ProcessingStage.loadingGraph =>
+      'Fetching the display graph for the completed job.',
+    ProcessingStage.complete => 'Graph data is loaded and ready to inspect.',
+    ProcessingStage.failed => 'Resolve the issue shown below and try again.',
+  };
+}
+
+IconData processingStageIcon(ProcessingStage stage) {
+  return switch (stage) {
+    ProcessingStage.idle => Icons.folder_open,
+    ProcessingStage.readingFiles => Icons.file_open,
+    ProcessingStage.readyToBuild => Icons.check_circle_outline,
+    ProcessingStage.uploadingDocuments => Icons.cloud_upload_outlined,
+    ProcessingStage.extractingGraph => Icons.account_tree,
+    ProcessingStage.loadingGraph => Icons.sync,
+    ProcessingStage.complete => Icons.done_all,
+    ProcessingStage.failed => Icons.error_outline,
+  };
+}
+
+Color processingStageColor(ProcessingStage stage, ColorScheme colorScheme) {
+  return switch (stage) {
+    ProcessingStage.complete ||
+    ProcessingStage.readyToBuild =>
+      colorScheme.primary,
+    ProcessingStage.failed => colorScheme.error,
+    _ => colorScheme.onSurfaceVariant,
+  };
 }
 
 UploadDocumentDraft buildUploadDraft({
