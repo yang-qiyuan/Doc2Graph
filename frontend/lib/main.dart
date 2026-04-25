@@ -447,15 +447,35 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
   }
 
   List<RelationModel> get _filteredRelations {
+    final graph = _graph;
+    if (graph == null) {
+      return const <RelationModel>[];
+    }
+
+    // Build entity type lookup for performance
+    final entityTypeById = <String, String>{
+      for (final entity in graph.entities) entity.id: entity.type
+    };
+
     final relations = _displayRelations;
     final predicateFilter = _effectivePredicateFilter;
     return relations.where((relation) {
+      // Always filter by confidence
       if (relation.confidence < _minConfidence) {
         return false;
       }
-      if (predicateFilter != 'all' && relation.predicate != predicateFilter) {
+
+      // Check if this is a Person-to-Person relation
+      final subjectType = entityTypeById[relation.subject] ?? '';
+      final objectType = entityTypeById[relation.object] ?? '';
+      final isPersonToPersonRelation = subjectType == 'Person' && objectType == 'Person';
+
+      // Person-to-Person relations are always shown (not filtered by predicate)
+      // Only filter Person-to-metadata relations by predicate
+      if (!isPersonToPersonRelation && predicateFilter != 'all' && relation.predicate != predicateFilter) {
         return false;
       }
+
       return true;
     }).toList();
   }
@@ -472,8 +492,16 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
 
     final displayEntityIds = <String>{};
 
-    // Use filtered relations (not all displayed relations) to determine which entities to show
-    // This ensures that when a predicate filter is applied, only relevant entities are shown
+    // Always include all major Person entities (document subjects)
+    // These should always be visible regardless of filters
+    for (final entity in graph.entities) {
+      if (entity.type == 'Person' && isMajorGraphEntity(entity, graph.documents)) {
+        displayEntityIds.add(entity.id);
+      }
+    }
+
+    // Use filtered relations to determine which additional entities to show
+    // This ensures that when a predicate filter is applied, only relevant metadata entities are shown
     final filteredRelations = _filteredRelations;
 
     // Collect all entity IDs from filtered relations
