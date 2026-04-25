@@ -446,35 +446,6 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
     return relationById.values.toList();
   }
 
-  List<EntityModel> get _displayEntities {
-    final graph = _graph;
-    if (graph == null) {
-      return const <EntityModel>[];
-    }
-
-    final entityById = <String, EntityModel>{
-      for (final entity in graph.entities) entity.id: entity
-    };
-
-    final displayEntityIds = <String>{};
-
-    // Get displayed relations to know which entities are referenced
-    final displayedRelations = _displayRelations;
-
-    // Collect all entity IDs from displayed relations
-    for (final relation in displayedRelations) {
-      displayEntityIds.add(relation.subject);
-      displayEntityIds.add(relation.object);
-    }
-
-    // Filter to only return entities that exist and filter appropriately
-    return displayEntityIds
-        .map((id) => entityById[id])
-        .where((entity) => entity != null && entity.id.isNotEmpty)
-        .cast<EntityModel>()
-        .toList();
-  }
-
   List<RelationModel> get _filteredRelations {
     final relations = _displayRelations;
     final predicateFilter = _effectivePredicateFilter;
@@ -490,7 +461,15 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
   }
 
   List<EntityModel> get _filteredEntities {
-    return _displayEntities;
+    final graph = _graph;
+    if (graph == null) {
+      return const <EntityModel>[];
+    }
+    return composeVisibleGraphEntities(
+      entities: graph.entities,
+      documents: graph.documents,
+      relations: _filteredRelations,
+    );
   }
 
   List<String> get _availablePredicates {
@@ -1386,16 +1365,15 @@ class _GraphCanvasState extends State<_GraphCanvas> {
             constraints.maxWidth.isFinite ? constraints.maxWidth : 960.0;
         final height = math.max(680.0, width * 0.72);
 
-        // Separate Person entities from expanded metadata entities
-        final personEntities =
-            widget.entities.where((e) => e.type == 'Person').toList();
+        // Relation filters can leave the person set unchanged while changing
+        // the actual visible graph, so include relations in the cache key.
         final nonPersonEntities =
             widget.entities.where((e) => e.type != 'Person').toList();
         final currentExpandedEntityIds =
             nonPersonEntities.map((e) => e.id).toSet();
 
         final baseSignature =
-            '${_signatureForEntities(personEntities)}:${width.toStringAsFixed(1)}:${height.toStringAsFixed(1)}';
+            '${_signatureForEntities(widget.entities)}:${_signatureForRelations(widget.relations)}:${width.toStringAsFixed(1)}:${height.toStringAsFixed(1)}';
 
         // Check if only expanded entities changed (not the base Person network)
         final baseChanged = _lastBaseSignature != baseSignature;
@@ -2758,6 +2736,31 @@ String effectivePredicateFilter(
       : 'all';
 }
 
+List<EntityModel> composeVisibleGraphEntities({
+  required List<EntityModel> entities,
+  required List<DocumentModel> documents,
+  required List<RelationModel> relations,
+}) {
+  final entityById = <String, EntityModel>{
+    for (final entity in entities) entity.id: entity,
+  };
+  final visibleEntityIds = <String>{
+    for (final entity in entities)
+      if (isMajorGraphEntity(entity, documents)) entity.id,
+  };
+
+  for (final relation in relations) {
+    visibleEntityIds.add(relation.subject);
+    visibleEntityIds.add(relation.object);
+  }
+
+  return visibleEntityIds
+      .map((id) => entityById[id])
+      .where((entity) => entity != null && entity.id.isNotEmpty)
+      .cast<EntityModel>()
+      .toList();
+}
+
 Color predicateColor(String predicate) {
   final hash = predicate.codeUnits.fold<int>(0, (sum, value) => sum + value);
   final colors = [
@@ -2784,6 +2787,19 @@ int _signatureForEntities(List<EntityModel> entities) {
     entities.length,
     (hash, entity) =>
         Object.hash(hash, entity.id, entity.type, entity.sourceDoc),
+  );
+}
+
+int _signatureForRelations(List<RelationModel> relations) {
+  return relations.fold<int>(
+    relations.length,
+    (hash, relation) => Object.hash(
+      hash,
+      relation.id,
+      relation.subject,
+      relation.predicate,
+      relation.object,
+    ),
   );
 }
 
