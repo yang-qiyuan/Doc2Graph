@@ -66,16 +66,15 @@ func (s *Neo4jStore) ClearDatabase(ctx context.Context) error {
 	return nil
 }
 
-// StoreExtractionResult stores the extraction result in Neo4j
+// StoreExtractionResult stores the extraction result in Neo4j using batched transactions
 func (s *Neo4jStore) StoreExtractionResult(ctx context.Context, jobID string, result *domain.ExtractionResult) error {
 	session := s.driver.NewSession(ctx, neo4j.SessionConfig{
 		DatabaseName: s.db,
 	})
 	defer session.Close(ctx)
 
-	// Store in a transaction
+	// Create Job node first
 	_, err := session.ExecuteWrite(ctx, func(tx neo4j.ManagedTransaction) (any, error) {
-		// Create Job node
 		_, err := tx.Run(ctx,
 			`MERGE (j:Job {id: $jobID})
 			 SET j.status = 'completed',
@@ -83,97 +82,121 @@ func (s *Neo4jStore) StoreExtractionResult(ctx context.Context, jobID string, re
 			map[string]any{
 				"jobID": jobID,
 			})
-		if err != nil {
-			return nil, fmt.Errorf("failed to create job node: %w", err)
+		return nil, err
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create job node: %w", err)
+	}
+
+	// Store entities in batches of 50
+	batchSize := 50
+	for i := 0; i < len(result.Entities); i += batchSize {
+		end := i + batchSize
+		if end > len(result.Entities) {
+			end = len(result.Entities)
 		}
+		batch := result.Entities[i:end]
 
-		// Create Entity nodes and link to Job
-		for _, entity := range result.Entities {
-			_, err := tx.Run(ctx,
-				`MERGE (e:Entity {id: $id})
-				 SET e.name = $name,
-				     e.type = $type,
-				     e.source_doc = $source_doc,
-				     e.aliases = $aliases
-				 WITH e
-				 MATCH (j:Job {id: $jobID})
-				 MERGE (j)-[:HAS_ENTITY]->(e)`,
-				map[string]any{
-					"id":         entity.ID,
-					"name":       entity.Name,
-					"type":       entity.Type,
-					"source_doc": entity.SourceDoc,
-					"aliases":    entity.Aliases,
-					"jobID":      jobID,
-				})
-			if err != nil {
-				return nil, fmt.Errorf("failed to create entity %s: %w", entity.ID, err)
-			}
-
-			// Store mentions
-			for _, mention := range entity.Mentions {
+		_, err := session.ExecuteWrite(ctx, func(tx neo4j.ManagedTransaction) (any, error) {
+			for _, entity := range batch {
 				_, err := tx.Run(ctx,
-					`MATCH (e:Entity {id: $entityID})
-					 CREATE (m:Mention {
-					     doc_id: $doc_id,
-					     char_start: $char_start,
-					     char_end: $char_end
-					 })
-					 CREATE (e)-[:HAS_MENTION]->(m)`,
+					`MERGE (e:Entity {id: $id})
+					 SET e.name = $name,
+					     e.type = $type,
+					     e.source_doc = $source_doc,
+					     e.aliases = $aliases
+					 WITH e
+					 MATCH (j:Job {id: $jobID})
+					 MERGE (j)-[:HAS_ENTITY]->(e)`,
 					map[string]any{
-						"entityID":   entity.ID,
-						"doc_id":     mention.DocID,
-						"char_start": mention.CharStart,
-						"char_end":   mention.CharEnd,
+						"id":         entity.ID,
+						"name":       entity.Name,
+						"type":       entity.Type,
+						"source_doc": entity.SourceDoc,
+						"aliases":    entity.Aliases,
+						"jobID":      jobID,
 					})
 				if err != nil {
-					return nil, fmt.Errorf("failed to create mention for entity %s: %w", entity.ID, err)
+					return nil, err
+				}
+
+				// Store mentions for this entity
+				for _, mention := range entity.Mentions {
+					_, err := tx.Run(ctx,
+						`MATCH (e:Entity {id: $entityID})
+						 CREATE (m:Mention {
+						     doc_id: $doc_id,
+						     char_start: $char_start,
+						     char_end: $char_end
+						 })
+						 CREATE (e)-[:HAS_MENTION]->(m)`,
+						map[string]any{
+							"entityID":   entity.ID,
+							"doc_id":     mention.DocID,
+							"char_start": mention.CharStart,
+							"char_end":   mention.CharEnd,
+						})
+					if err != nil {
+						return nil, err
+					}
 				}
 			}
+			return nil, nil
+		})
+		if err != nil {
+			return fmt.Errorf("failed to store entity batch %d-%d: %w", i, end, err)
 		}
+	}
 
-		// Create Relation nodes with graph relationships to subject and object entities
-		for _, relation := range result.Relations {
-			_, err := tx.Run(ctx,
-				`CREATE (r:Relation {
-				     id: $id,
-				     predicate: $predicate,
-				     evidence: $evidence,
-				     source_doc: $source_doc,
-				     char_start: $char_start,
-				     char_end: $char_end,
-				     confidence: $confidence
-				 })
-				 WITH r
-				 MATCH (subj:Entity {id: $subject})
-				 MATCH (obj:Entity {id: $object})
-				 MERGE (r)-[:HAS_SUBJECT]->(subj)
-				 MERGE (r)-[:HAS_OBJECT]->(obj)
-				 WITH r
-				 MATCH (j:Job {id: $jobID})
-				 MERGE (j)-[:HAS_RELATION]->(r)`,
-				map[string]any{
-					"id":         relation.ID,
-					"subject":    relation.Subject,
-					"object":     relation.Object,
-					"predicate":  relation.Predicate,
-					"evidence":   relation.Evidence,
-					"source_doc": relation.SourceDoc,
-					"char_start": relation.CharStart,
-					"char_end":   relation.CharEnd,
-					"confidence": relation.Confidence,
-					"jobID":      jobID,
-				})
-			if err != nil {
-				return nil, fmt.Errorf("failed to create relation %s: %w", relation.ID, err)
+	// Store relations in batches of 50
+	for i := 0; i < len(result.Relations); i += batchSize {
+		end := i + batchSize
+		if end > len(result.Relations) {
+			end = len(result.Relations)
+		}
+		batch := result.Relations[i:end]
+
+		_, err := session.ExecuteWrite(ctx, func(tx neo4j.ManagedTransaction) (any, error) {
+			for _, relation := range batch {
+				_, err := tx.Run(ctx,
+					`CREATE (r:Relation {
+					     id: $id,
+					     predicate: $predicate,
+					     evidence: $evidence,
+					     source_doc: $source_doc,
+					     char_start: $char_start,
+					     char_end: $char_end,
+					     confidence: $confidence
+					 })
+					 WITH r
+					 MATCH (subj:Entity {id: $subject})
+					 MATCH (obj:Entity {id: $object})
+					 MERGE (r)-[:HAS_SUBJECT]->(subj)
+					 MERGE (r)-[:HAS_OBJECT]->(obj)
+					 WITH r
+					 MATCH (j:Job {id: $jobID})
+					 MERGE (j)-[:HAS_RELATION]->(r)`,
+					map[string]any{
+						"id":         relation.ID,
+						"subject":    relation.Subject,
+						"object":     relation.Object,
+						"predicate":  relation.Predicate,
+						"evidence":   relation.Evidence,
+						"source_doc": relation.SourceDoc,
+						"char_start": relation.CharStart,
+						"char_end":   relation.CharEnd,
+						"confidence": relation.Confidence,
+						"jobID":      jobID,
+					})
+				if err != nil {
+					return nil, err
+				}
 			}
+			return nil, nil
+		})
+		if err != nil {
+			return fmt.Errorf("failed to store relation batch %d-%d: %w", i, end, err)
 		}
-
-		return nil, nil
-	})
-
-	if err != nil {
-		return fmt.Errorf("transaction failed: %w", err)
 	}
 
 	log.Printf("Stored extraction result for job %s: %d entities, %d relations",
