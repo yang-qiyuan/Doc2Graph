@@ -1,9 +1,16 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 
+from dotenv import load_dotenv
+
 from .pipeline import ExtractionPipeline
+
+# Load .env file from the extractor directory
+_env_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env")
+load_dotenv(_env_path)
 
 
 def main() -> int:

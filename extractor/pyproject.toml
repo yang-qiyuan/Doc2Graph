@@ -3,7 +3,12 @@ name = "doc2graph-extractor"
 version = "0.1.0"
 description = "Agentic extraction pipeline for Doc2Graph"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+  "anthropic>=0.18.0",
+  "pydantic>=2.0.0",
+  "tenacity>=8.0.0",
+  "python-dotenv>=1.0.0"
+]
 
 [build-system]
 requires = ["setuptools>=68"]

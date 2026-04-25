@@ -71,8 +71,8 @@ func (t displayTransform) buildExpandedGraph(result domain.ExtractionResult) dom
 }
 
 func (t displayTransform) buildCollapsedGraph(result domain.ExtractionResult) domain.GraphResponse {
-	visibleEntities := make([]domain.Entity, 0, len(result.Entities))
-	visibleRelations := make([]domain.Relation, 0, len(result.Relations))
+	allEntities := make([]domain.Entity, 0, len(result.Entities))
+	allRelations := make([]domain.Relation, 0, len(result.Relations))
 	display := domain.GraphDisplayResponse{Transformed: true}
 
 	hiddenEntityIDs := make(map[string]string)
@@ -92,9 +92,9 @@ func (t displayTransform) buildCollapsedGraph(result domain.ExtractionResult) do
 			case "metadata_work_leaf":
 				display.CollapsedWorkLeaves++
 			}
-			continue
 		}
-		visibleEntities = append(visibleEntities, entityWithDisplay)
+		// Include ALL entities (even hidden ones) in the response
+		allEntities = append(allEntities, entityWithDisplay)
 	}
 
 	for _, relation := range result.Relations {
@@ -102,15 +102,15 @@ func (t displayTransform) buildCollapsedGraph(result domain.ExtractionResult) do
 		if hidden {
 			display.HiddenRelationCount++
 			_ = hiddenReason
-			continue
 		}
-		visibleRelations = append(visibleRelations, relationWithDisplay)
+		// Include ALL relations (even hidden ones) in the response
+		allRelations = append(allRelations, relationWithDisplay)
 	}
 
 	return domain.GraphResponse{
 		Documents: result.Documents,
-		Entities:  visibleEntities,
-		Relations: visibleRelations,
+		Entities:  allEntities,
+		Relations: allRelations,
 		Display:   display,
 	}
 }
@@ -169,13 +169,13 @@ func (t displayTransform) decorateRelation(
 }
 
 func (t displayTransform) shouldHideEntity(entity domain.Entity) (bool, string) {
-	if t.isPrimaryEntity(entity) {
+	// Show ALL Person entities (primary and secondary)
+	if entity.Type == "Person" {
 		return false, ""
 	}
 
+	// Hide all non-Person entities initially
 	switch entity.Type {
-	case "Person":
-		return true, "secondary_person_leaf"
 	case "Time":
 		return true, "metadata_time_leaf"
 	case "Place":

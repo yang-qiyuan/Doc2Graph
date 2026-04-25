@@ -279,7 +279,7 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
     for (final relation in _graph!.relations) {
       if (relation.subject == entity.id) {
         final connectedEntity = entityById[relation.object];
-        if (connectedEntity != null && connectedEntity.type != 'Person') {
+        if (connectedEntity != null && connectedEntity.type != 'Person' && connectedEntity.type != 'Time') {
           connections.add(HiddenConnectionModel(
             entity: connectedEntity,
             relation: relation,
@@ -288,7 +288,7 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
         }
       } else if (relation.object == entity.id) {
         final connectedEntity = entityById[relation.subject];
-        if (connectedEntity != null && connectedEntity.type != 'Person') {
+        if (connectedEntity != null && connectedEntity.type != 'Person' && connectedEntity.type != 'Time') {
           connections.add(HiddenConnectionModel(
             entity: connectedEntity,
             relation: relation,
@@ -407,10 +407,6 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
     }
 
     final relationById = <String, RelationModel>{};
-    final majorIds = graph.entities
-        .where((entity) => isMajorGraphEntity(entity, graph.documents))
-        .map((entity) => entity.id)
-        .toSet();
 
     // Build entity type lookup for performance
     final entityTypeById = <String, String>{
@@ -420,19 +416,16 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
     // Get IDs of expanded person entities
     final expandedPersonIds = _expandedEntityDetails.keys.toSet();
 
-    // Show all Person-Person relations (not just major-to-major)
+    // Show all relations where at least one entity is involved
     for (final relation in graph.relations) {
       final subjectType = entityTypeById[relation.subject] ?? '';
       final objectType = entityTypeById[relation.object] ?? '';
 
-      // Show if at least one side is a major entity and it's a Person-Person relation
+      // Always show ALL Person-Person relations
       if (subjectType == 'Person' && objectType == 'Person') {
-        if (majorIds.contains(relation.subject) ||
-            majorIds.contains(relation.object)) {
-          relationById[relation.id] = relation;
-        }
+        relationById[relation.id] = relation;
       } else {
-        // For Person to non-Person relations, show only if the Person is expanded
+        // For Person-to-non-Person relations, show only if the Person is expanded
         if (subjectType == 'Person' &&
             expandedPersonIds.contains(relation.subject)) {
           relationById[relation.id] = relation;
@@ -492,10 +485,10 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
 
     final displayEntityIds = <String>{};
 
-    // Always include all major Person entities (document subjects)
-    // These should always be visible regardless of filters
+    // Always include ALL Person entities initially
+    // This ensures the graph is never blank
     for (final entity in graph.entities) {
-      if (entity.type == 'Person' && isMajorGraphEntity(entity, graph.documents)) {
+      if (entity.type == 'Person') {
         displayEntityIds.add(entity.id);
       }
     }
@@ -717,16 +710,16 @@ class _MainPanel extends StatelessWidget {
                 '${filteredEntities.length} visible nodes • ${filteredRelations.length} visible edges',
             child: Column(
               children: [
-                _GraphFilters(
-                  minConfidence: minConfidence,
-                  predicateFilter: predicateFilter,
-                  availablePredicates: availablePredicates,
-                  expandedEntityCount: expandedEntityCount,
-                  onMinConfidenceChanged: onMinConfidenceChanged,
-                  onPredicateFilterChanged: onPredicateFilterChanged,
-                  onCollapseAllEntities: onCollapseAllEntities,
-                ),
-                const SizedBox(height: 16),
+                // _GraphFilters(
+                //   minConfidence: minConfidence,
+                //   predicateFilter: predicateFilter,
+                //   availablePredicates: availablePredicates,
+                //   expandedEntityCount: expandedEntityCount,
+                //   onMinConfidenceChanged: onMinConfidenceChanged,
+                //   onPredicateFilterChanged: onPredicateFilterChanged,
+                //   onCollapseAllEntities: onCollapseAllEntities,
+                // ),
+                // const SizedBox(height: 16),
                 _GraphCanvas(
                   entities: filteredEntities,
                   relations: filteredRelations,
@@ -2142,10 +2135,38 @@ class GraphPainter extends CustomPainter {
 
     for (final edge in edges) {
       final paint = Paint()
-        ..color = edge.color.withValues(alpha: 0.45)
-        ..strokeWidth = 2 + (edge.relation.confidence * 2.5)
+        ..color = edge.color.withValues(alpha: 0.65)
+        ..strokeWidth = 3 + (edge.relation.confidence * 2.5)
         ..style = PaintingStyle.stroke;
       canvas.drawLine(edge.from, edge.to, paint);
+
+      // Draw edge label
+      final midpoint = Offset(
+        (edge.from.dx + edge.to.dx) / 2,
+        (edge.from.dy + edge.to.dy) / 2,
+      );
+
+      final labelPainter = TextPainter(
+        text: TextSpan(
+          text: edge.relation.predicate,
+          style: const TextStyle(
+            fontSize: 9,
+            fontWeight: FontWeight.w600,
+            color: Color(0xFF102D22),
+            backgroundColor: Color(0xFFF5F5DC),
+          ),
+        ),
+        textAlign: TextAlign.center,
+        textDirection: TextDirection.ltr,
+      )..layout();
+
+      labelPainter.paint(
+        canvas,
+        Offset(
+          midpoint.dx - (labelPainter.width / 2),
+          midpoint.dy - (labelPainter.height / 2),
+        ),
+      );
     }
 
     for (final node in nodes) {

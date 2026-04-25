@@ -161,6 +161,8 @@ func (s *Neo4jStore) StoreExtractionResult(ctx context.Context, jobID string, re
 				_, err := tx.Run(ctx,
 					`CREATE (r:Relation {
 					     id: $id,
+					     subject: $subject,
+					     object: $object,
 					     predicate: $predicate,
 					     evidence: $evidence,
 					     source_doc: $source_doc,
@@ -168,11 +170,6 @@ func (s *Neo4jStore) StoreExtractionResult(ctx context.Context, jobID string, re
 					     char_end: $char_end,
 					     confidence: $confidence
 					 })
-					 WITH r
-					 MATCH (subj:Entity {id: $subject})
-					 MATCH (obj:Entity {id: $object})
-					 MERGE (r)-[:HAS_SUBJECT]->(subj)
-					 MERGE (r)-[:HAS_OBJECT]->(obj)
 					 WITH r
 					 MATCH (j:Job {id: $jobID})
 					 MERGE (j)-[:HAS_RELATION]->(r)`,
@@ -280,12 +277,10 @@ func (s *Neo4jStore) GetGraphForJob(ctx context.Context, jobID string) (*domain.
 		// Get all relations for this job
 		relationsResult, err := tx.Run(ctx,
 			`MATCH (j:Job {id: $jobID})-[:HAS_RELATION]->(r:Relation)
-			 MATCH (r)-[:HAS_SUBJECT]->(subj:Entity)
-			 MATCH (r)-[:HAS_OBJECT]->(obj:Entity)
-			 RETURN r.id as id, r.predicate as predicate, r.evidence as evidence,
+			 RETURN r.id as id, r.subject as subject, r.object as object,
+			        r.predicate as predicate, r.evidence as evidence,
 			        r.source_doc as source_doc, r.char_start as char_start,
-			        r.char_end as char_end, r.confidence as confidence,
-			        subj.id as subject, obj.id as object`,
+			        r.char_end as char_end, r.confidence as confidence`,
 			map[string]any{
 				"jobID": jobID,
 			})

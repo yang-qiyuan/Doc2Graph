@@ -32,8 +32,16 @@ func (s *Service) GetGraph(jobID string, expandMetadata bool) (domain.GraphRespo
 		return domain.GraphResponse{}, fmt.Errorf("failed to get graph from Neo4j: %w", err)
 	}
 
+	// Fetch documents from memory store for isPrimaryEntity check
+	// Documents are needed to determine which Person entities are "primary" (document subjects)
+	var documents []domain.ExportDocument
+	if memResult, ok := s.memStore.GetJobResult(jobID); ok {
+		documents = memResult.Documents
+	}
+
 	// Convert GraphData to ExtractionResult for compatibility with buildDisplayGraph
 	result := domain.ExtractionResult{
+		Documents: documents,
 		Entities:  graphData.Entities,
 		Relations: graphData.Relations,
 	}

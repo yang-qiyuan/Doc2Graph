@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"time"
 
 	"doc2graph/backend/internal/domain"
 	"doc2graph/backend/internal/extractor"
@@ -28,7 +29,12 @@ func (s *Service) CreateAndProcess(ctx context.Context, documents []domain.Docum
 	job := s.memStore.CreateJob(documents)
 	s.memStore.UpdateJobStatus(job.ID, domain.JobStatusProcessing, "")
 
-	result, err := s.runner.Run(ctx, documents)
+	// Create a timeout context for the extractor to account for LLM API calls
+	// 5 minutes should be sufficient for the agentic loop validation
+	extractorCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+
+	result, err := s.runner.Run(extractorCtx, documents)
 	if err != nil {
 		s.memStore.UpdateJobStatus(job.ID, domain.JobStatusFailed, err.Error())
 		return domain.Job{}, fmt.Errorf("process job %s: %w", job.ID, err)

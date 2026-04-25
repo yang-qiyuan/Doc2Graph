@@ -44,6 +44,11 @@ func LoadWikipediaFixtures() ([]domain.UploadDocument, error) {
 		return strings.Compare(a.ID, b.ID)
 	})
 
+	// For testing, limit to first 5 documents
+	if len(documents) > 5 {
+		documents = documents[:5]
+	}
+
 	return documents, nil
 }
 
