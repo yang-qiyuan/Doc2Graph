@@ -90,4 +90,44 @@ void main() {
     expect(draft.id, 'upload-005-isaac-newton');
     expect(draft.title, 'Isaac Newton');
   });
+
+  test('upload validation catches unsupported and empty files', () {
+    final unsupported = buildUploadDraft(
+      filename: 'notes.pdf',
+      content: 'PDF bytes are not accepted here.',
+      index: 0,
+    );
+    final empty = buildUploadDraft(
+      filename: 'empty.md',
+      content: '   ',
+      index: 1,
+    );
+
+    final issues = validateUploadDrafts([unsupported, empty]);
+
+    expect(issues.map((issue) => issue.filename), contains('notes.pdf'));
+    expect(issues.map((issue) => issue.filename), contains('empty.md'));
+    expect(
+      issues.map((issue) => issue.message),
+      contains('Only .md, .markdown, and .txt files are supported.'),
+    );
+    expect(issues.map((issue) => issue.message), contains('File is empty.'));
+  });
+
+  test('upload validation enforces 30 file cap', () {
+    final drafts = List.generate(
+      31,
+      (index) => buildUploadDraft(
+        filename: 'doc_$index.md',
+        content: '# Doc $index\n\nText',
+        index: index,
+      ),
+    );
+
+    final issues = validateUploadDrafts(drafts);
+
+    expect(issues, hasLength(1));
+    expect(issues.single.filename, 'Selection');
+    expect(issues.single.message, contains('Choose at most 30 files'));
+  });
 }

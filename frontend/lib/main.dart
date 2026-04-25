@@ -56,6 +56,7 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
   String _predicateFilter = 'all';
   final Map<String, EntityDetailModel> _expandedEntityDetails = {};
   List<UploadDocumentDraft> _uploadDrafts = const <UploadDocumentDraft>[];
+  List<UploadSelectionIssue> _uploadIssues = const <UploadSelectionIssue>[];
 
   @override
   void initState() {
@@ -81,6 +82,7 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
       _selectedEvidence = null;
       _predicateFilter = 'all';
       _expandedEntityDetails.clear();
+      _uploadIssues = const <UploadSelectionIssue>[];
     });
     _hoveredEntity.value = null;
     _hoveredRelation.value = null;
@@ -126,27 +128,31 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
       if (files.isEmpty) {
         return;
       }
-      if (files.length > 30) {
-        setState(() {
-          _error = 'Choose at most 30 files. You selected ${files.length}.';
-        });
-        return;
-      }
-
       final drafts = <UploadDocumentDraft>[];
-      for (final file in files) {
-        final content = await file.readAsString();
-        drafts.add(
-          buildUploadDraft(
-            filename: file.name,
-            content: content,
-            index: drafts.length,
+      final issues = <UploadSelectionIssue>[];
+      if (files.length > 30) {
+        issues.add(
+          UploadSelectionIssue(
+            filename: 'Selection',
+            message: 'Choose at most 30 files. You selected ${files.length}.',
           ),
         );
       }
 
+      for (final file in files) {
+        final content = await file.readAsString();
+        final draft = buildUploadDraft(
+          filename: file.name,
+          content: content,
+          index: drafts.length,
+        );
+        drafts.add(draft);
+        issues.addAll(validateUploadDraft(draft));
+      }
+
       setState(() {
-        _uploadDrafts = drafts;
+        _uploadDrafts = drafts.take(30).toList();
+        _uploadIssues = issues;
       });
     } catch (error) {
       setState(() {
@@ -156,9 +162,13 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
   }
 
   Future<void> _runUploadedFiles() async {
-    if (_uploadDrafts.isEmpty) {
+    final issues = validateUploadDrafts(_uploadDrafts);
+    if (_uploadDrafts.isEmpty || issues.isNotEmpty) {
       setState(() {
-        _error = 'Pick one or more Markdown files before starting a job.';
+        _uploadIssues = issues;
+        _error = _uploadDrafts.isEmpty
+            ? 'Pick one or more Markdown files before starting a job.'
+            : 'Resolve upload validation issues before starting a job.';
       });
       return;
     }
@@ -170,6 +180,7 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
       _selectedEvidence = null;
       _predicateFilter = 'all';
       _expandedEntityDetails.clear();
+      _uploadIssues = const <UploadSelectionIssue>[];
     });
     _hoveredEntity.value = null;
     _hoveredRelation.value = null;
@@ -202,6 +213,7 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
   void _clearUploadSelection() {
     setState(() {
       _uploadDrafts = const <UploadDocumentDraft>[];
+      _uploadIssues = const <UploadSelectionIssue>[];
       _error = null;
     });
   }
@@ -487,6 +499,7 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
             filteredEntities: _filteredEntities,
             filteredRelations: _filteredRelations,
             uploadDrafts: _uploadDrafts,
+            uploadIssues: _uploadIssues,
             minConfidence: _minConfidence,
             predicateFilter: _effectivePredicateFilter,
             availablePredicates: _availablePredicates,
@@ -571,6 +584,7 @@ class _MainPanel extends StatelessWidget {
     required this.filteredEntities,
     required this.filteredRelations,
     required this.uploadDrafts,
+    required this.uploadIssues,
     required this.minConfidence,
     required this.predicateFilter,
     required this.availablePredicates,
@@ -595,6 +609,7 @@ class _MainPanel extends StatelessWidget {
   final List<EntityModel> filteredEntities;
   final List<RelationModel> filteredRelations;
   final List<UploadDocumentDraft> uploadDrafts;
+  final List<UploadSelectionIssue> uploadIssues;
   final double minConfidence;
   final String predicateFilter;
   final List<String> availablePredicates;
@@ -620,6 +635,7 @@ class _MainPanel extends StatelessWidget {
         _UploadPanel(
           baseUrlController: baseUrlController,
           uploadDrafts: uploadDrafts,
+          uploadIssues: uploadIssues,
           isLoading: isLoading,
           error: error,
           onPickMarkdownFiles: onPickMarkdownFiles,
@@ -690,6 +706,7 @@ class _UploadPanel extends StatelessWidget {
   const _UploadPanel({
     required this.baseUrlController,
     required this.uploadDrafts,
+    required this.uploadIssues,
     required this.isLoading,
     required this.error,
     required this.onPickMarkdownFiles,
@@ -700,6 +717,7 @@ class _UploadPanel extends StatelessWidget {
 
   final TextEditingController baseUrlController;
   final List<UploadDocumentDraft> uploadDrafts;
+  final List<UploadSelectionIssue> uploadIssues;
   final bool isLoading;
   final String? error;
   final Future<void> Function() onPickMarkdownFiles;
@@ -709,6 +727,7 @@ class _UploadPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final hasBlockingIssues = uploadIssues.isNotEmpty;
     final totalChars =
         uploadDrafts.fold<int>(0, (sum, draft) => sum + draft.content.length);
     return Card(
@@ -739,9 +758,10 @@ class _UploadPanel extends StatelessWidget {
                   label: const Text('Choose Markdown Files'),
                 ),
                 FilledButton.icon(
-                  onPressed: isLoading || uploadDrafts.isEmpty
-                      ? null
-                      : onRunUploadedFiles,
+                  onPressed:
+                      isLoading || uploadDrafts.isEmpty || hasBlockingIssues
+                          ? null
+                          : onRunUploadedFiles,
                   icon: const Icon(Icons.account_tree),
                   label: const Text('Build Graph From Files'),
                 ),
@@ -796,6 +816,38 @@ class _UploadPanel extends StatelessWidget {
                       ),
                     );
                   },
+                ),
+              ),
+            ],
+            if (uploadIssues.isNotEmpty) ...[
+              const SizedBox(height: 16),
+              Text(
+                'Upload Issues',
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+              const SizedBox(height: 8),
+              ...uploadIssues.map(
+                (issue) => Padding(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Icon(
+                        Icons.error_outline,
+                        size: 18,
+                        color: Theme.of(context).colorScheme.error,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          '${issue.filename}: ${issue.message}',
+                          style: TextStyle(
+                            color: Theme.of(context).colorScheme.error,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ],
@@ -2742,6 +2794,16 @@ class UploadDocumentDraft {
   }
 }
 
+class UploadSelectionIssue {
+  const UploadSelectionIssue({
+    required this.filename,
+    required this.message,
+  });
+
+  final String filename;
+  final String message;
+}
+
 UploadDocumentDraft buildUploadDraft({
   required String filename,
   required String content,
@@ -2755,6 +2817,60 @@ UploadDocumentDraft buildUploadDraft({
     filename: basename,
     content: content,
   );
+}
+
+List<UploadSelectionIssue> validateUploadDrafts(
+  List<UploadDocumentDraft> drafts,
+) {
+  final issues = <UploadSelectionIssue>[];
+  if (drafts.length > 30) {
+    issues.add(
+      UploadSelectionIssue(
+        filename: 'Selection',
+        message: 'Choose at most 30 files. You selected ${drafts.length}.',
+      ),
+    );
+  }
+  for (final draft in drafts) {
+    issues.addAll(validateUploadDraft(draft));
+  }
+  return issues;
+}
+
+List<UploadSelectionIssue> validateUploadDraft(UploadDocumentDraft draft) {
+  final issues = <UploadSelectionIssue>[];
+  if (!isSupportedUploadFilename(draft.filename)) {
+    issues.add(
+      UploadSelectionIssue(
+        filename: draft.filename,
+        message: 'Only .md, .markdown, and .txt files are supported.',
+      ),
+    );
+  }
+  if (draft.content.trim().isEmpty) {
+    issues.add(
+      UploadSelectionIssue(
+        filename: draft.filename,
+        message: 'File is empty.',
+      ),
+    );
+  }
+  if (draft.title.trim().isEmpty) {
+    issues.add(
+      UploadSelectionIssue(
+        filename: draft.filename,
+        message: 'Could not infer a document title.',
+      ),
+    );
+  }
+  return issues;
+}
+
+bool isSupportedUploadFilename(String filename) {
+  final lower = filename.toLowerCase();
+  return lower.endsWith('.md') ||
+      lower.endsWith('.markdown') ||
+      lower.endsWith('.txt');
 }
 
 String inferMarkdownTitle(String filename, String content) {
