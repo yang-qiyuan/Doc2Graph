@@ -446,35 +446,6 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
     return relationById.values.toList();
   }
 
-  List<EntityModel> get _displayEntities {
-    final graph = _graph;
-    if (graph == null) {
-      return const <EntityModel>[];
-    }
-
-    final entityById = <String, EntityModel>{
-      for (final entity in graph.entities) entity.id: entity
-    };
-
-    final displayEntityIds = <String>{};
-
-    // Get displayed relations to know which entities are referenced
-    final displayedRelations = _displayRelations;
-
-    // Collect all entity IDs from displayed relations
-    for (final relation in displayedRelations) {
-      displayEntityIds.add(relation.subject);
-      displayEntityIds.add(relation.object);
-    }
-
-    // Filter to only return entities that exist and filter appropriately
-    return displayEntityIds
-        .map((id) => entityById[id])
-        .where((entity) => entity != null && entity.id.isNotEmpty)
-        .cast<EntityModel>()
-        .toList();
-  }
-
   List<RelationModel> get _filteredRelations {
     final relations = _displayRelations;
     final predicateFilter = _effectivePredicateFilter;
@@ -490,7 +461,33 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
   }
 
   List<EntityModel> get _filteredEntities {
-    return _displayEntities;
+    final graph = _graph;
+    if (graph == null) {
+      return const <EntityModel>[];
+    }
+
+    final entityById = <String, EntityModel>{
+      for (final entity in graph.entities) entity.id: entity
+    };
+
+    final displayEntityIds = <String>{};
+
+    // Use filtered relations (not all displayed relations) to determine which entities to show
+    // This ensures that when a predicate filter is applied, only relevant entities are shown
+    final filteredRelations = _filteredRelations;
+
+    // Collect all entity IDs from filtered relations
+    for (final relation in filteredRelations) {
+      displayEntityIds.add(relation.subject);
+      displayEntityIds.add(relation.object);
+    }
+
+    // Filter to only return entities that exist and filter appropriately
+    return displayEntityIds
+        .map((id) => entityById[id])
+        .where((entity) => entity != null && entity.id.isNotEmpty)
+        .cast<EntityModel>()
+        .toList();
   }
 
   List<String> get _availablePredicates {
