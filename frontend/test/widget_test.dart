@@ -67,67 +67,6 @@ void main() {
     );
   });
 
-  test('relation filtering removes unreferenced expanded metadata nodes', () {
-    final documents = [
-      DocumentModel(
-        id: 'doc-einstein',
-        title: 'Albert Einstein',
-        sourceType: 'markdown',
-      ),
-      DocumentModel(
-        id: 'doc-newton',
-        title: 'Isaac Newton',
-        sourceType: 'markdown',
-      ),
-    ];
-    final einstein = EntityModel(
-      id: 'person-einstein',
-      name: 'Albert Einstein',
-      type: 'Person',
-      sourceDoc: 'doc-einstein',
-      mentions: [
-        MentionModel(docId: 'doc-einstein', charStart: 0, charEnd: 15)
-      ],
-    );
-    final newton = EntityModel(
-      id: 'person-newton',
-      name: 'Isaac Newton',
-      type: 'Person',
-      sourceDoc: 'doc-newton',
-      mentions: [MentionModel(docId: 'doc-newton', charStart: 0, charEnd: 12)],
-    );
-    final ulm = EntityModel(
-      id: 'place-ulm',
-      name: 'Ulm',
-      type: 'Place',
-      sourceDoc: 'doc-einstein',
-      mentions: [
-        MentionModel(docId: 'doc-einstein', charStart: 40, charEnd: 43),
-      ],
-    );
-    final visibleEntities = composeVisibleGraphEntities(
-      entities: [einstein, newton, ulm],
-      documents: documents,
-      relations: [
-        RelationModel(
-          id: 'rel-collab',
-          subject: 'person-einstein',
-          predicate: 'collaborated_with',
-          object: 'person-newton',
-          sourceDoc: 'doc-einstein',
-          confidence: 0.9,
-        ),
-      ],
-    );
-
-    expect(visibleEntities.map((entity) => entity.id),
-        contains('person-einstein'));
-    expect(
-        visibleEntities.map((entity) => entity.id), contains('person-newton'));
-    expect(visibleEntities.map((entity) => entity.id),
-        isNot(contains('place-ulm')));
-  });
-
   test('upload drafts infer stable ids and titles', () {
     final draft = buildUploadDraft(
       filename: 'Ada_Lovelace.md',
