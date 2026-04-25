@@ -68,7 +68,7 @@ The typical development flow:
 - HTTP API server orchestrating document ingestion and extraction jobs
 - Invokes the Python extractor synchronously via subprocess (`internal/extractor/runner.go`)
 - Validates extraction results against `schemas/export.schema.json` and `schemas/ontology.json`
-- Stores jobs, documents, and extraction results in memory
+- Stores extraction results in Neo4j graph database with jobs/documents in memory
 - Serves graph data and evidence to the frontend
 
 **Extractor (Python)** - `extractor/`
@@ -107,13 +107,36 @@ The typical development flow:
 
 - `cmd/server` - Application entry point
 - `internal/api` - HTTP handlers, routing, JSON request/response models
-- `internal/config` - Environment-driven configuration (DOC2GRAPH_HTTP_ADDR defaults to :8080)
+- `internal/config` - Environment-driven configuration (DOC2GRAPH_HTTP_ADDR, NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD, NEO4J_DATABASE)
 - `internal/domain` - Core models (Document, Job, Entity, Relation, ExtractionResult) and validation
 - `internal/extractor` - Python extractor subprocess runner
 - `internal/jobs` - Job orchestration and result storage
 - `internal/graph` - Graph-serving logic for frontend consumption
 - `internal/devfixtures` - Wikipedia fixture loading for local testing
-- `internal/store` - Persistence interfaces (currently in-memory)
+- `internal/store` - Persistence layer with MemoryStore (jobs/documents) and Neo4jStore (extraction results)
+
+### Neo4j Graph Schema
+
+The Neo4j database uses a graph-native schema with the following node types and relationships:
+
+**Node Types:**
+- `Job` - Represents an extraction job with properties: id, status, updated_at
+- `Entity` - Knowledge graph entities with properties: id, name, type, source_doc, aliases
+- `Mention` - Entity mention locations with properties: doc_id, char_start, char_end
+- `Relation` - Knowledge graph relations with properties: id, predicate, evidence, source_doc, char_start, char_end, confidence
+
+**Relationship Types:**
+- `(Job)-[:HAS_ENTITY]->(Entity)` - Links jobs to extracted entities
+- `(Job)-[:HAS_RELATION]->(Relation)` - Links jobs to extracted relations
+- `(Entity)-[:HAS_MENTION]->(Mention)` - Links entities to their source mentions
+- `(Relation)-[:HAS_SUBJECT]->(Entity)` - Links relations to subject entities
+- `(Relation)-[:HAS_OBJECT]->(Entity)` - Links relations to object entities
+
+**Key Design Decisions:**
+- Relations are stored as nodes (not edges) to capture metadata like evidence, confidence, and source provenance
+- Entity IDs serve as primary keys through actual graph relationships rather than string properties
+- This graph-native design enables powerful traversals and maintains referential integrity
+- The schema follows the RDF triple pattern: Subject-Predicate-Object, represented as Relation nodes with HAS_SUBJECT and HAS_OBJECT edges
 
 ### Extractor Implementation Details
 
@@ -166,9 +189,10 @@ Each relation stores `char_start` and `char_end` for source text highlighting. S
 2. Backend creates a Job and stores Documents with stable `char_start`/`char_end` chunk boundaries
 3. Backend invokes Python extractor via `PythonRunner`, passing JSON payload on stdin
 4. Extractor runs the pipeline and returns JSON result on stdout
-5. Backend validates the result, stores it with the Job, and marks the Job as completed
-6. Frontend fetches the extraction result via `/api/v1/jobs/{id}/result`
-7. Frontend displays entities/relations and fetches evidence via `/api/v1/graphs/{id}/relations/{relation_id}`
+5. Backend validates the result and stores it in Neo4j graph database
+6. Backend stores the extraction result in memory for backward compatibility and marks the Job as completed
+7. Frontend fetches the graph data from Neo4j via `/api/v1/graph?job_id={id}`
+8. Frontend displays entities/relations and fetches evidence via `/api/v1/graphs/{id}/relations/{relation_id}`
 
 ### Frontend Graph Interaction
 
@@ -229,6 +253,15 @@ The `testdata/wikipedia_markdown/` directory contains 30 Wikipedia biographical 
 
 ## Recent Enhancements
 
+**Backend (2026-04-25):**
+- ✅ Neo4j graph database integration for persistent storage of extraction results
+- ✅ Graph-native schema with Entity and Relation nodes, HAS_SUBJECT/HAS_OBJECT relationships
+- ✅ Hybrid architecture: Neo4jStore for extraction results, MemoryStore for jobs/documents
+- ✅ Environment-driven Neo4j configuration (NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD, NEO4J_DATABASE)
+- ✅ Automatic storage to Neo4j after extraction with fallback to memory store
+- ✅ Graph retrieval from Neo4j for frontend rendering
+- ✅ Tested with Neo4j Aura cloud instance (207 entities, 177 relations)
+
 **Extractor (2026-04-24):**
 - ✅ Expanded from 5 to 13 relation types, covering all ontology-defined relationships
 - ✅ Added PERSON-WORK relations (authored, translated, edited)
@@ -251,8 +284,9 @@ The `testdata/wikipedia_markdown/` directory contains 30 Wikipedia biographical 
 - Patterns extract first occurrence only; multiple instances of same relation type not captured
 
 **Storage & Infrastructure:**
-- Storage is in-memory; persistence layer (likely Neo4j) is planned
+- Neo4j integration complete for extraction results; jobs/documents still in-memory
 - No horizontal scaling support yet
+- Graph queries could be optimized with custom Cypher indexes
 
 **Frontend:**
 - File upload flow not yet implemented; only the dev fixture endpoint works
