@@ -1,9 +1,13 @@
 package api
 
-import "net/http"
+import (
+	"net/http"
 
-func NewRouter() http.Handler {
-	app := NewApp()
+	"doc2graph/backend/internal/store"
+)
+
+func NewRouter(neo4jStore *store.Neo4jStore) http.Handler {
+	app := NewApp(neo4jStore)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", app.handleHealth)
 	mux.HandleFunc("/api/v1/dev/fixtures/wikipedia", app.handleWikipediaFixtureJob)

@@ -1,6 +1,7 @@
 package graph
 
 import (
+	"context"
 	"fmt"
 
 	"doc2graph/backend/internal/domain"
@@ -8,24 +9,40 @@ import (
 )
 
 type Service struct {
-	store *store.MemoryStore
+	memStore   *store.MemoryStore
+	neo4jStore *store.Neo4jStore
 }
 
-func NewService(store *store.MemoryStore) *Service {
-	return &Service{store: store}
+func NewService(neo4jStore *store.Neo4jStore) *Service {
+	// For backward compatibility, we'll fallback to memStore for certain operations
+	// In a future version, all operations should use Neo4j
+	return &Service{
+		neo4jStore: neo4jStore,
+	}
+}
+
+func (s *Service) SetMemoryStore(memStore *store.MemoryStore) {
+	s.memStore = memStore
 }
 
 func (s *Service) GetGraph(jobID string, expandMetadata bool) (domain.GraphResponse, error) {
-	result, ok := s.store.GetJobResult(jobID)
-	if !ok {
-		return domain.GraphResponse{}, fmt.Errorf("job result not found")
+	ctx := context.Background()
+	graphData, err := s.neo4jStore.GetGraphForJob(ctx, jobID)
+	if err != nil {
+		return domain.GraphResponse{}, fmt.Errorf("failed to get graph from Neo4j: %w", err)
+	}
+
+	// Convert GraphData to ExtractionResult for compatibility with buildDisplayGraph
+	result := domain.ExtractionResult{
+		Entities:  graphData.Entities,
+		Relations: graphData.Relations,
 	}
 
 	return buildDisplayGraph(result, expandMetadata), nil
 }
 
 func (s *Service) GetEntity(jobID, entityID string) (domain.Entity, error) {
-	result, ok := s.store.GetJobResult(jobID)
+	result, ok := s.memStore.GetJobResult(jobID)
 	if !ok {
 		return domain.Entity{}, fmt.Errorf("job result not found")
 	}
@@ -40,7 +57,7 @@ func (s *Service) GetEntity(jobID, entityID string) (domain.Entity, error) {
 }
 
 func (s *Service) GetEntityDetail(jobID, entityID string) (domain.EntityDetailResponse, error) {
-	result, ok := s.store.GetJobResult(jobID)
+	result, ok := s.memStore.GetJobResult(jobID)
 	if !ok {
 		return domain.EntityDetailResponse{}, fmt.Errorf("job result not found")
 	}
@@ -99,7 +116,7 @@ func (s *Service) GetEntityDetail(jobID, entityID string) (domain.EntityDetailRe
 }
 
 func (s *Service) GetRelationEvidence(jobID, relationID string) (domain.RelationEvidenceResponse, error) {
-	result, ok := s.store.GetJobResult(jobID)
+	result, ok := s.memStore.GetJobResult(jobID)
 	if !ok {
 		return domain.RelationEvidenceResponse{}, fmt.Errorf("job result not found")
 	}
@@ -117,7 +134,7 @@ func (s *Service) GetRelationEvidence(jobID, relationID string) (domain.Relation
 		return domain.RelationEvidenceResponse{}, fmt.Errorf("relation not found")
 	}
 
-	doc, ok := s.store.GetDocument(relation.SourceDoc)
+	doc, ok := s.memStore.GetDocument(relation.SourceDoc)
 	if !ok {
 		return domain.RelationEvidenceResponse{}, fmt.Errorf("document not found")
 	}
@@ -141,7 +158,7 @@ func (s *Service) GetRelationEvidence(jobID, relationID string) (domain.Relation
 }
 
 func (s *Service) GetChunk(documentID, chunkID string) (domain.ChunkDetailResponse, error) {
-	doc, ok := s.store.GetDocument(documentID)
+	doc, ok := s.memStore.GetDocument(documentID)
 	if !ok {
 		return domain.ChunkDetailResponse{}, fmt.Errorf("document not found")
 	}

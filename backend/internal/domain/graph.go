@@ -1,5 +1,10 @@
 package domain
 
+type GraphData struct {
+	Entities  []Entity   `json:"entities"`
+	Relations []Relation `json:"relations"`
+}
+
 type GraphResponse struct {
 	Documents []ExportDocument     `json:"documents"`
 	Entities  []Entity             `json:"entities"`
