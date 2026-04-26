@@ -243,7 +243,9 @@ ANTHROPIC_MODEL=claude-3-5-sonnet-20241022
 - Multi-sentence relationship extraction
 - Horizontal scaling support
 - Random file upload and agent-aided relation extraction
-
+- Add confidence feature
+- Parallel feature extraction
+- More error handling
 ## License
 
 MIT License - See LICENSE file for details
