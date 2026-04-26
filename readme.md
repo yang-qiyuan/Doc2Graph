@@ -1,5 +1,7 @@
 # Doc2Graph: Intelligent Knowledge Graph Extraction from Documents
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 Doc2Graph transforms biographical documents into interactive knowledge graphs with full source provenance. Extract entities, relationships, and their connections from Wikipedia articles or any biographical text, with built-in entity fusion and cross-document relation detection.
 
 ![Doc2Graph Overview](media/graph2node_intro_clip.gif)
