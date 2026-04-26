@@ -53,3 +53,18 @@ htmlcov/
 
 # Logs
 *.log
+
+# Documentation / Project tracking
+PROJECT_STATUS.md
+CLAUDE.md
+claude.md
+
+# Environment and credentials
+.env
+extractor/.env
+Neo4j_credential/
+
+# Test artifacts
+extractor/fusion_test_result.json
+extractor/test_llm_extraction.py
+extractor/test_llm_extraction_result.json
