@@ -46,22 +46,20 @@ Extract relationships between entities across different documents:
 **Example Test Cases:**
 - `inter_file_relation/albert_einstein.md` + `inter_file_relation/niels_bohr.md` → Mutual `collaborated_with` relations between Einstein and Bohr
 
-## Supported Relation Types
+### 4. Complex Multi-Entity Graph Handling
 
-**PERSON-PERSON Relations:**
-- `influenced_by`, `collaborated_with`, `family_of`, `student_of`
+![Complex Node Handling](media/multile_entities.png)
 
-**PERSON-ORG Relations:**
-- `worked_at`, `studied_at`, `founded`, `member_of`
+Efficiently visualize and navigate knowledge graphs with dozens of entities and hundreds of relationships:
 
-**PERSON-PLACE Relations:**
-- `born_in`, `died_in`, `lived_in`
+- **Scalable Visualization**: Handle 70+ visible nodes and 40+ visible edges with smooth performance
+- **Intelligent Layout**: Force-directed algorithm automatically positions entities to minimize edge crossings
+- **Entity Type Separation**: Different entity types (Person, Organization, Place, Work, Time) positioned in distinct regions
+- **Hidden Entity Management**: Track and display counts of hidden entities to help users understand graph complexity
+- **Interactive Filtering**: Dynamically show/hide entities and relations based on confidence and type filters
 
-**PERSON-WORK Relations:**
-- `authored`, `translated`, `edited`
-
-**PERSON-TIME Relations:**
-- `born_on`, `died_on`
+**Real-World Example:**
+- 30 Wikipedia biographical documents → 71 visible entities, 41 visible edges, with 136 hidden entities and 58 hidden edges available for exploration
 
 ## Architecture
 
@@ -87,15 +85,6 @@ Extract relationships between entities across different documents:
 - Entity/relation evidence viewer with source highlighting
 - Confidence filtering and relation type filtering
 - Connected node dragging for graph manipulation
-
-### Data Flow
-
-1. Frontend uploads documents or triggers Wikipedia fixture endpoint
-2. Backend creates Job and stores Documents with character offsets
-3. Backend invokes Python extractor subprocess
-4. Extractor runs regex extraction → Claude validation → cross-document fusion
-5. Backend validates results against schema/ontology
-6. Frontend fetches graph data and displays interactive visualization
 
 ## Getting Started
 
@@ -170,36 +159,59 @@ The project includes comprehensive test fixtures demonstrating key features:
 ### Wikipedia Fixtures (`backend/testdata/wikipedia_markdown/`)
 - 30 biographical articles for integration testing
 
-## Schema Documentation
+## Database Setup
 
-### Entity Schema
-```json
-{
-  "id": "P:marie_curie",
-  "name": "Marie Curie",
-  "type": "Person",
-  "aliases": ["Maria Skłodowska", "Marie Skłodowska-Curie"],
-  "source_doc": "doc_001",
-  "mentions": [
-    {"doc_id": "doc_001", "char_start": 120, "char_end": 131}
-  ]
-}
+### Neo4j Configuration (Optional)
+
+Doc2Graph supports Neo4j for persistent graph storage. To enable Neo4j:
+
+**1. Create a Neo4j AuraDB Instance (Cloud)**
+- Visit [Neo4j AuraDB](https://neo4j.com/cloud/aura/) and create a free instance
+- Note your connection URI, username, password, and database name
+
+**2. Configure Backend with Neo4j Credentials**
+
+Set environment variables before running the backend:
+
+```bash
+export NEO4J_URI="neo4j+s://your-instance.databases.neo4j.io"
+export NEO4J_USER="your-username"
+export NEO4J_PASSWORD="your-password"
+export NEO4J_DATABASE="your-database-name"
+
+cd backend && go run cmd/server/main.go
 ```
 
-### Relation Schema
-```json
-{
-  "id": "R1",
-  "subject": "P:marie_curie",
-  "predicate": "won_award",
-  "object": "W:nobel_prize_physics",
-  "evidence": "Marie Curie won the Nobel Prize in Physics in 1903",
-  "source_doc": "doc_001",
-  "char_start": 450,
-  "char_end": 501,
-  "confidence": 0.92
-}
+Or run directly with inline environment variables:
+
+```bash
+NEO4J_URI="neo4j+s://xxxxx.databases.neo4j.io" \
+NEO4J_USER="xxxxx" \
+NEO4J_PASSWORD="xxxxx" \
+NEO4J_DATABASE="xxxxx" \
+go run cmd/server/main.go
 ```
+
+**3. Local Neo4j Setup (Alternative)**
+
+For local development:
+
+```bash
+# Using Docker
+docker run -d \
+  --name neo4j \
+  -p 7474:7474 -p 7687:7687 \
+  -e NEO4J_AUTH=neo4j/password \
+  neo4j:latest
+
+# Connect with local URI
+export NEO4J_URI="neo4j://localhost:7687"
+export NEO4J_USER="neo4j"
+export NEO4J_PASSWORD="password"
+export NEO4J_DATABASE="neo4j"
+```
+
+**Note:** Without Neo4j configuration, the backend uses in-memory storage (data is lost on restart).
 
 ## Configuration
 
