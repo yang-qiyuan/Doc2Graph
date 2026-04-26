@@ -239,13 +239,10 @@ ANTHROPIC_MODEL=claude-3-5-sonnet-20241022
 - **Cross-Document Fusion**: LLM-powered entity disambiguation with confidence scoring
 
 ## Future Enhancements
-
-- File upload UI (currently using dev fixture endpoint)
-- Neo4j persistence layer (currently in-memory)
-- Fuzzy entity matching and alias resolution
 - Community detection and graph clustering
 - Multi-sentence relationship extraction
 - Horizontal scaling support
+- Random file upload and agent-aided relation extraction
 
 ## License
 
