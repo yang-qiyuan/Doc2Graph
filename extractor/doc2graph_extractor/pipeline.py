@@ -7,9 +7,9 @@ import re
 
 from .models import Entity, ExtractionResult, Mention, Relation
 
-# Import agent for validation (optional, controlled by env var)
+# Import agents for LLM-based extraction/validation (optional, controlled by env var)
 try:
-    from .agent import ValidationAgent
+    from .agent import ExtractionAgent, ValidationAgent
     AGENT_AVAILABLE = True
 except ImportError:
     AGENT_AVAILABLE = False
@@ -68,70 +68,122 @@ _MET_PERSON_RE = re.compile(
 
 
 class ExtractionPipeline:
-    """Deterministic first-pass extraction with normalization."""
+    """Entity and relation extraction with multiple modes: regex, validated, or llm."""
 
     def run(self, documents: list[dict]) -> dict:
         export_documents = [self._build_export_document(document) for document in documents]
+
+        # Determine extraction mode
+        # Priority: EXTRACTION_MODE > ENABLE_AGENTIC_LOOP (for backward compatibility)
+        extraction_mode = os.getenv("EXTRACTION_MODE", "").lower()
+        if not extraction_mode:
+            # Backward compatibility: map ENABLE_AGENTIC_LOOP to new modes
+            if os.getenv("ENABLE_AGENTIC_LOOP", "false").lower() == "true":
+                extraction_mode = "validated"
+            else:
+                extraction_mode = "regex"
+
+        # Validate extraction mode
+        if extraction_mode not in ["regex", "validated", "llm"]:
+            raise ValueError(
+                f"Invalid EXTRACTION_MODE: {extraction_mode}. "
+                "Must be one of: regex, validated, llm"
+            )
+
+        if extraction_mode in ["validated", "llm"] and not AGENT_AVAILABLE:
+            raise ValueError(
+                f"EXTRACTION_MODE={extraction_mode} requires anthropic package. "
+                "Install with: pip install anthropic"
+            )
+
         raw_entities: list[Entity] = []
         raw_relations: list[Relation] = []
 
-        for document in documents:
-            raw_entities.extend(self._extract_entities(document))
-            raw_relations.extend(self._extract_relations(document))
-
-        # Validation stage - optional Claude-based refinement
-        if os.getenv("ENABLE_AGENTIC_LOOP", "false").lower() == "true" and AGENT_AVAILABLE:
-            agent = ValidationAgent()
-            validated_entities: list[Entity] = []
-            validated_relations: list[Relation] = []
-
+        if extraction_mode == "llm":
+            # Pure LLM extraction - no regex
+            agent = ExtractionAgent()
             for document in documents:
-                # Get entities and relations for this document
-                doc_entities = [e for e in raw_entities if e.source_doc == document["id"]]
-                doc_relations = [r for r in raw_relations if r.source_doc == document["id"]]
-
-                # Convert dataclasses to dicts for validation
-                entity_dicts = [asdict(e) for e in doc_entities]
-                relation_dicts = [asdict(r) for r in doc_relations]
-
-                # Call Claude for validation
-                refined_entity_dicts, refined_relation_dicts = agent.validate(
+                entity_dicts, relation_dicts = agent.extract(document)
+                # Convert LLM output to Entity/Relation objects with proper ID mapping
+                entities, relations = self._llm_dicts_to_entities_and_relations(
                     document, entity_dicts, relation_dicts
                 )
+                raw_entities.extend(entities)
+                raw_relations.extend(relations)
+        else:
+            # Regex extraction (used for both "regex" and "validated" modes)
+            for document in documents:
+                raw_entities.extend(self._extract_entities(document))
+                raw_relations.extend(self._extract_relations(document))
 
-                # Convert validated dicts back to dataclasses
-                for entity_dict in refined_entity_dicts:
-                    # Reconstruct mentions from dicts
-                    mentions = [Mention(**m) for m in entity_dict.get("mentions", [])]
-                    validated_entities.append(
-                        Entity(
-                            id=entity_dict["id"],
-                            name=entity_dict["name"],
-                            type=entity_dict["type"],
-                            source_doc=entity_dict["source_doc"],
-                            mentions=mentions,
-                            aliases=entity_dict.get("aliases", []),
-                        )
+            # Validation stage - optional Claude-based refinement for "validated" mode
+            if extraction_mode == "validated":
+                agent = ValidationAgent()
+                validated_entities: list[Entity] = []
+                validated_relations: list[Relation] = []
+
+                for document in documents:
+                    # Get entities and relations for this document
+                    doc_entities = [e for e in raw_entities if e.source_doc == document["id"]]
+                    doc_relations = [r for r in raw_relations if r.source_doc == document["id"]]
+
+                    # Convert dataclasses to dicts for validation
+                    entity_dicts = [asdict(e) for e in doc_entities]
+                    relation_dicts = [asdict(r) for r in doc_relations]
+
+                    # Call Claude for validation
+                    refined_entity_dicts, refined_relation_dicts = agent.validate(
+                        document, entity_dicts, relation_dicts
                     )
 
-                for relation_dict in refined_relation_dicts:
-                    validated_relations.append(
-                        Relation(
-                            id=relation_dict["id"],
-                            subject=relation_dict["subject"],
-                            predicate=relation_dict["predicate"],
-                            object=relation_dict["object"],
-                            evidence=relation_dict["evidence"],
-                            source_doc=relation_dict["source_doc"],
-                            char_start=relation_dict["char_start"],
-                            char_end=relation_dict["char_end"],
-                            confidence=relation_dict["confidence"],
+                    # Convert validated dicts back to dataclasses
+                    for entity_dict in refined_entity_dicts:
+                        # Reconstruct mentions from dicts
+                        mentions = [Mention(**m) for m in entity_dict.get("mentions", [])]
+                        validated_entities.append(
+                            Entity(
+                                id=entity_dict["id"],
+                                name=entity_dict["name"],
+                                type=entity_dict["type"],
+                                source_doc=entity_dict["source_doc"],
+                                mentions=mentions,
+                                aliases=entity_dict.get("aliases", []),
+                            )
                         )
-                    )
 
-            # Replace raw extractions with validated ones
-            raw_entities = validated_entities
-            raw_relations = validated_relations
+                    for relation_dict in refined_relation_dicts:
+                        validated_relations.append(
+                            Relation(
+                                id=relation_dict["id"],
+                                subject=relation_dict["subject"],
+                                predicate=relation_dict["predicate"],
+                                object=relation_dict["object"],
+                                evidence=relation_dict["evidence"],
+                                source_doc=relation_dict["source_doc"],
+                                char_start=relation_dict["char_start"],
+                                char_end=relation_dict["char_end"],
+                                confidence=relation_dict["confidence"],
+                            )
+                        )
+
+                # Replace raw extractions with validated ones
+                raw_entities = validated_entities
+                raw_relations = validated_relations
+
+                # Cross-document fusion - merge duplicate entities across documents
+                import sys
+                print(f"\nPerforming cross-document entity fusion on {len(raw_entities)} entities...", file=sys.stderr)
+                entity_dicts = [asdict(e) for e in raw_entities]
+                fusion_merges = agent.cross_document_fusion(entity_dicts)
+
+                # Apply fusion merges
+                if fusion_merges:
+                    raw_entities, raw_relations = self._apply_fusion_merges(
+                        raw_entities, raw_relations, fusion_merges
+                    )
+                    print(f"Fusion complete: {len(fusion_merges)} entity merges applied", file=sys.stderr)
+                else:
+                    print("No cross-document duplicates detected", file=sys.stderr)
 
         entities, relations = self._normalize_graph(raw_entities, raw_relations)
         result = ExtractionResult(documents=export_documents, entities=entities, relations=relations)
@@ -568,6 +620,166 @@ class ExtractionPipeline:
                 relation_counter += 1
 
         return relations
+
+    def _apply_fusion_merges(
+        self,
+        entities: list[Entity],
+        relations: list[Relation],
+        fusion_merges: list[tuple[str, str, list[str]]],
+    ) -> tuple[list[Entity], list[Relation]]:
+        """
+        Apply cross-document entity fusion merges.
+
+        Args:
+            entities: List of entities
+            relations: List of relations
+            fusion_merges: List of (source_id, target_id, aliases) tuples
+
+        Returns:
+            Tuple of (merged_entities, updated_relations)
+        """
+        # Build merge map: source_id -> target_id
+        merge_map = {source_id: target_id for source_id, target_id, _ in fusion_merges}
+
+        # Build entity lookup for efficient access
+        entity_by_id = {e.id: e for e in entities}
+
+        # Update target entities with accumulated aliases
+        for source_id, target_id, aliases in fusion_merges:
+            if target_id in entity_by_id:
+                target_entity = entity_by_id[target_id]
+                # Add the source entity's name to the target's aliases
+                if source_id in entity_by_id:
+                    source_name = entity_by_id[source_id].name
+                    # Add source name as alias if it's different from target name
+                    if source_name.lower() != target_entity.name.lower():
+                        if source_name not in target_entity.aliases:
+                            target_entity.aliases.append(source_name)
+                    # Also add any existing aliases from source entity
+                    if source_id in entity_by_id:
+                        for alias in entity_by_id[source_id].aliases:
+                            if alias not in target_entity.aliases and alias.lower() != target_entity.name.lower():
+                                target_entity.aliases.append(alias)
+                # Add additional aliases from fusion
+                for alias in aliases:
+                    if alias not in target_entity.aliases and alias.lower() != target_entity.name.lower():
+                        target_entity.aliases.append(alias)
+
+        # Remove merged entities (keep only targets)
+        merged_entities = [e for e in entities if e.id not in merge_map]
+
+        # Update relations to use target entity IDs
+        updated_relations = []
+        seen_relations = set()  # Track (subject, predicate, object) to deduplicate
+
+        for relation in relations:
+            # Apply merge map to subject and object
+            subject_id = merge_map.get(relation.subject, relation.subject)
+            object_id = merge_map.get(relation.object, relation.object)
+
+            # Deduplicate relations
+            relation_key = (subject_id, relation.predicate, object_id)
+            if relation_key in seen_relations:
+                continue
+            seen_relations.add(relation_key)
+
+            # Create updated relation
+            updated_relation = Relation(
+                id=relation.id,
+                subject=subject_id,
+                predicate=relation.predicate,
+                object=object_id,
+                evidence=relation.evidence,
+                source_doc=relation.source_doc,
+                char_start=relation.char_start,
+                char_end=relation.char_end,
+                confidence=relation.confidence,
+            )
+            updated_relations.append(updated_relation)
+
+        return merged_entities, updated_relations
+
+    def _llm_dicts_to_entities_and_relations(
+        self,
+        document: dict,
+        entity_dicts: list[dict],
+        relation_dicts: list[dict]
+    ) -> tuple[list[Entity], list[Relation]]:
+        """
+        Convert LLM extraction output to Entity and Relation objects.
+
+        This combined method ensures that relation subject/object IDs properly
+        reference the actual entity IDs created from the entity_dicts.
+        """
+        # Step 1: Create entities and build name->ID mapping
+        entities = []
+        name_to_entity_id: dict[tuple[str, str], str] = {}  # (name, type) -> entity_id
+
+        for idx, entity_dict in enumerate(entity_dicts):
+            entity_id = f"{document['id']}:{entity_dict['type'].lower()}:{idx}"
+            entity_name = entity_dict["name"]
+            entity_type = entity_dict["type"]
+
+            # Find the entity name in the document to get char offsets
+            # For now, we create a single mention spanning the whole document
+            # (LLM doesn't provide precise char offsets for entity mentions)
+            mention = Mention(
+                doc_id=document["id"],
+                char_start=0,
+                char_end=len(document.get("content", ""))
+            )
+
+            entity = Entity(
+                id=entity_id,
+                name=entity_name,
+                type=entity_type,
+                source_doc=document["id"],
+                mentions=[mention],
+                aliases=entity_dict.get("aliases", []),
+            )
+            entities.append(entity)
+
+            # Map entity name to ID for relation linking
+            name_to_entity_id[(entity_name, entity_type)] = entity_id
+
+            # Also map aliases to the same ID
+            for alias in entity_dict.get("aliases", []):
+                name_to_entity_id[(alias, entity_type)] = entity_id
+
+        # Step 2: Create relations using the name->ID mapping
+        relations = []
+        for idx, relation_dict in enumerate(relation_dicts):
+            relation_id = f"{document['id']}:relation:{idx}"
+
+            # Look up subject and object entity IDs
+            subject_key = (relation_dict["subject"], relation_dict["subject_type"])
+            object_key = (relation_dict["object"], relation_dict["object_type"])
+
+            subject_id = name_to_entity_id.get(subject_key)
+            object_id = name_to_entity_id.get(object_key)
+
+            if not subject_id or not object_id:
+                # Skip relations where we can't find the referenced entities
+                import sys
+                print(f"WARNING: Skipping relation {relation_id}: subject or object entity not found", file=sys.stderr)
+                print(f"  Subject: {subject_key} -> {subject_id}", file=sys.stderr)
+                print(f"  Object: {object_key} -> {object_id}", file=sys.stderr)
+                continue
+
+            relation = Relation(
+                id=relation_id,
+                subject=subject_id,
+                predicate=relation_dict["predicate"],
+                object=object_id,
+                evidence=relation_dict.get("evidence", ""),
+                source_doc=document["id"],
+                char_start=relation_dict.get("char_start", 0),
+                char_end=relation_dict.get("char_end", len(document.get("content", ""))),
+                confidence=relation_dict.get("confidence", 0.5),
+            )
+            relations.append(relation)
+
+        return entities, relations
 
     def _normalize_graph(
         self, entities: list[Entity], relations: list[Relation]

@@ -1,0 +1,3 @@
+# Albert Einstein
+
+Albert Einstein (born March 14, 1879 in Ulm, Germany, died April 18, 1955 in Princeton, New Jersey) was a theoretical physicist who developed the theory of relativity. Einstein studied at ETH Zurich and worked at the Institute for Advanced Study in Princeton. He was influenced by Max Planck and collaborated with Niels Bohr on quantum mechanics debates. Einstein won the Nobel Prize in Physics in 1921. He authored "The Theory of Relativity" in 1916 and lived in Princeton during his later years. Einstein married Mileva Marić in 1903. He was a member of the Prussian Academy of Sciences.

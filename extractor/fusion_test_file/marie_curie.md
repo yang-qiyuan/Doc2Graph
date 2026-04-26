@@ -1,0 +1,3 @@
+# Marie Curie
+
+Marie Curie (born November 7, 1867 in Warsaw, Poland, died July 4, 1934 in Passy, France) was a pioneering physicist and chemist who conducted groundbreaking research on radioactivity. Marie Curie studied at the University of Paris (Sorbonne) and worked at the Radium Institute in Paris. She married Pierre Curie in 1895. Marie Curie and Pierre Curie collaborated on radioactivity research. She won the Nobel Prize in Physics in 1903 (shared with Pierre Curie and Henri Becquerel) and won the Nobel Prize in Chemistry in 1911. Marie Curie authored "Radioactive Substances" in 1903. She was the first woman to win a Nobel Prize.

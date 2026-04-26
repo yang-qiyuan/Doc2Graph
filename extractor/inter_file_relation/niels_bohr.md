@@ -1,0 +1,3 @@
+# Niels Bohr
+
+Niels Bohr (born October 7, 1885 in Copenhagen, Denmark, died November 18, 1962 in Copenhagen, Denmark) was a Danish physicist who made foundational contributions to understanding atomic structure and quantum theory. Bohr studied at the University of Copenhagen and worked at the Niels Bohr Institute. He collaborated with Albert Einstein on quantum mechanics and won the Nobel Prize in Physics in 1922. Bohr authored "Atomic Theory and the Description of Nature" in 1934. He was influenced by Ernest Rutherford and lived in Copenhagen throughout his life. Bohr married Margrethe Nørlund in 1912 and was a member of the Royal Danish Academy of Sciences.

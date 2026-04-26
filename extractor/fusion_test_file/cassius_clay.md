@@ -1,0 +1,3 @@
+# Cassius Clay
+
+Cassius Clay (born January 17, 1942 in Louisville, Kentucky, died June 3, 2016 in Scottsdale, Arizona) was an American professional boxer who became one of the most significant sports figures of the 20th century. Cassius Clay studied at Central High School in Louisville and trained under Angelo Dundee. He won the Olympic gold medal in boxing at the 1960 Summer Olympics in Rome. Cassius Clay was influenced by Malcolm X and joined the Nation of Islam in 1964. He married Sonji Roi in 1964. Cassius Clay defeated Sonny Liston in 1964 to become the heavyweight champion of the world. He was born in Louisville, Kentucky and lived in Miami during his early professional career.

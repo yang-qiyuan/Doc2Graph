@@ -1,0 +1,3 @@
+# Maria Skłodowska
+
+Maria Skłodowska (born November 7, 1867 in Warsaw, Poland, died July 4, 1934 in Passy, France) was a brilliant scientist who pioneered research in radioactivity. Maria Skłodowska studied physics at the Sorbonne (University of Paris) and married Pierre Curie in 1895. She worked alongside Pierre Curie at the Radium Institute in Paris. Maria Skłodowska received the Nobel Prize in Physics in 1903, shared with Pierre Curie and Henri Becquerel, for their work on radioactivity. She published "Radioactive Substances" in 1903 and later won a second Nobel Prize in Chemistry in 1911. She was the first woman to win a Nobel Prize.
