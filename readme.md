@@ -1,10 +1,10 @@
-# Doc2Graph: Intelligent Knowledge Graph Extraction from Documents
+# KnowGraph: Intelligent Knowledge Graph Extraction from Documents
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Doc2Graph transforms biographical documents into interactive knowledge graphs with full source provenance. Extract entities, relationships, and their connections from Wikipedia articles or any biographical text, with built-in entity fusion and cross-document relation detection.
+KnowGraph transforms biographical documents into interactive knowledge graphs with full source provenance. Extract entities, relationships, and their connections from Wikipedia articles or any biographical text, with built-in entity fusion and cross-document relation detection.
 
-![Doc2Graph Overview](media/graph2node_intro_clip.gif)
+![KnowGraph Overview](media/graph2node_intro_clip.gif)
 
 ## Key Features
 
@@ -176,7 +176,7 @@ The project includes comprehensive test fixtures demonstrating key features:
 
 ### Neo4j Configuration (Optional)
 
-Doc2Graph supports Neo4j for persistent graph storage. To enable Neo4j:
+KnowGraph supports Neo4j for persistent graph storage. To enable Neo4j:
 
 **1. Create a Neo4j AuraDB Instance (Cloud)**
 - Visit [Neo4j AuraDB](https://neo4j.com/cloud/aura/) and create a free instance
