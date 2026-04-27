@@ -48,7 +48,21 @@ Extract relationships between entities across different documents:
 **Example Test Cases:**
 - `inter_file_relation/albert_einstein.md` + `inter_file_relation/niels_bohr.md` → Mutual `collaborated_with` relations between Einstein and Bohr
 
-### 4. Complex Multi-Entity Graph Handling
+### 4. Evidence Highlighting and Source Provenance
+
+![Evidence Highlighting](media/evidence.png)
+
+Click any relation to view detailed evidence from the source documents:
+
+- **Relation Context**: See which entities are connected and the relation type
+- **Document Reference**: Identify the exact source document and text chunk
+- **Highlighted Evidence**: View the original text with the relevant portion highlighted
+- **Character-Level Precision**: Every extracted fact links to specific character offsets in the source
+- **Verifiable Extraction**: Reduce hallucination by grounding every relation in source text
+
+**Example**: Clicking the "collaborated_with" relation between Winston Churchill and Lloyd George shows the highlighted text from the original document describing their political collaboration in the UK government.
+
+### 5. Complex Multi-Entity Graph Handling
 
 ![Complex Node Handling](media/multile_entities.png)
 
@@ -76,9 +90,9 @@ Efficiently visualize and navigate knowledge graphs with dozens of entities and 
 **Extractor (Python)** - `extractor/`
 - Standalone pipeline: reads JSON from stdin, emits JSON to stdout
 - Three extraction modes:
-  - **regex** (fast, deterministic)
+  - **regex** (cheap, deterministic)
   - **validated** (regex + Claude validation + cross-document fusion) ← **RECOMMENDED**
-  - **llm** (pure Claude extraction)
+  - **llm** (pure Claude extraction) <--- To be refined, cost is too high now
 - Cross-document entity fusion and relation deduplication
 - Full Unicode support for international names
 
