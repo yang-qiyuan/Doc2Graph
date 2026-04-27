@@ -74,9 +74,6 @@ Efficiently visualize and navigate knowledge graphs with dozens of entities and 
 - **Hidden Entity Management**: Track and display counts of hidden entities to help users understand graph complexity
 - **Interactive Filtering**: Dynamically show/hide entities and relations based on confidence and type filters
 
-**Real-World Example:**
-- 30 Wikipedia biographical documents → 71 visible entities, 41 visible edges, with 136 hidden entities and 58 hidden edges available for exploration
-
 ## Architecture
 
 ### Three-Tier Design
