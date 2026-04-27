@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+
+	"doc2graph/backend/internal/extractor"
 )
 
 type errorResponse struct {
@@ -40,8 +42,13 @@ func (a *App) handleJobs(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		if err := extractor.ValidateExtractionMode(req.Mode); err != nil {
+			writeJSON(w, http.StatusBadRequest, errorResponse{Error: err.Error()})
+			return
+		}
+
 		resp := buildUploadDocumentsResponse(req)
-		job, err := a.jobService.CreateAndProcess(r.Context(), resp.Documents)
+		job, err := a.jobService.CreateAndProcess(r.Context(), resp.Documents, req.Mode)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, errorResponse{Error: err.Error()})
 			return

@@ -14,7 +14,7 @@ type stubRunner struct {
 	err    error
 }
 
-func (s stubRunner) Run(_ context.Context, _ []domain.Document) (domain.ExtractionResult, error) {
+func (s stubRunner) Run(_ context.Context, _ []domain.Document, _ string) (domain.ExtractionResult, error) {
 	return s.result, s.err
 }
 

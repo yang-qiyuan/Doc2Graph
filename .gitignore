@@ -68,3 +68,5 @@ Neo4j_credential/
 extractor/fusion_test_result.json
 extractor/test_llm_extraction.py
 extractor/test_llm_extraction_result.json
+
+AI_ARCHITECTURE_FLOWCHART.md

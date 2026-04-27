@@ -10,6 +10,7 @@ import (
 
 type uploadDocumentsRequest struct {
 	Documents []domain.UploadDocument `json:"documents"`
+	Mode      string                  `json:"mode,omitempty"`
 }
 
 type uploadDocumentsResponse struct {

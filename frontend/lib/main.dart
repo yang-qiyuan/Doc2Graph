@@ -54,6 +54,7 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
   late final ValueNotifier<RelationModel?> _hoveredRelation;
   double _minConfidence = 0.0;
   String _predicateFilter = 'all';
+  String _extractionMode = 'validated';
   final Map<String, EntityDetailModel> _expandedEntityDetails = {};
   List<UploadDocumentDraft> _uploadDrafts = const <UploadDocumentDraft>[];
   List<UploadSelectionIssue> _uploadIssues = const <UploadSelectionIssue>[];
@@ -91,7 +92,10 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
 
     try {
       final baseUrl = _normalizedBaseUrl;
-      final job = await _api.createWikipediaFixtureJob(baseUrl);
+      final job = await _api.createWikipediaFixtureJob(
+        baseUrl,
+        mode: _extractionMode,
+      );
       setState(() {
         _processingStage = ProcessingStage.loadingGraph;
       });
@@ -209,7 +213,11 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
       setState(() {
         _processingStage = ProcessingStage.extractingGraph;
       });
-      final job = await _api.createUploadJob(baseUrl, _uploadDrafts);
+      final job = await _api.createUploadJob(
+        baseUrl,
+        _uploadDrafts,
+        mode: _extractionMode,
+      );
       setState(() {
         _processingStage = ProcessingStage.loadingGraph;
       });
@@ -566,6 +574,12 @@ class _ProjectHomePageState extends State<ProjectHomePage> {
             onRunUploadedFiles: _runUploadedFiles,
             onClearUploadSelection: _clearUploadSelection,
             onRunWikipediaFixtures: _runWikipediaFixtures,
+            extractionMode: _extractionMode,
+            onExtractionModeChanged: (value) {
+              setState(() {
+                _extractionMode = value;
+              });
+            },
             onSelectEntity: _selectEntity,
             onSelectRelation: _selectRelation,
             onHover: _handleHover,
@@ -644,6 +658,8 @@ class _MainPanel extends StatelessWidget {
     required this.onRunUploadedFiles,
     required this.onClearUploadSelection,
     required this.onRunWikipediaFixtures,
+    required this.extractionMode,
+    required this.onExtractionModeChanged,
     required this.onSelectEntity,
     required this.onSelectRelation,
     required this.onHover,
@@ -670,6 +686,8 @@ class _MainPanel extends StatelessWidget {
   final Future<void> Function() onRunUploadedFiles;
   final VoidCallback onClearUploadSelection;
   final Future<void> Function() onRunWikipediaFixtures;
+  final String extractionMode;
+  final ValueChanged<String> onExtractionModeChanged;
   final ValueChanged<EntityModel> onSelectEntity;
   final ValueChanged<RelationModel> onSelectRelation;
   final void Function({EntityModel? entity, RelationModel? relation}) onHover;
@@ -692,6 +710,8 @@ class _MainPanel extends StatelessWidget {
           onRunUploadedFiles: onRunUploadedFiles,
           onClearUploadSelection: onClearUploadSelection,
           onRunWikipediaFixtures: onRunWikipediaFixtures,
+          extractionMode: extractionMode,
+          onExtractionModeChanged: onExtractionModeChanged,
         ),
         if (job != null) ...[
           const SizedBox(height: 16),
@@ -764,6 +784,8 @@ class _UploadPanel extends StatelessWidget {
     required this.onRunUploadedFiles,
     required this.onClearUploadSelection,
     required this.onRunWikipediaFixtures,
+    required this.extractionMode,
+    required this.onExtractionModeChanged,
   });
 
   final TextEditingController baseUrlController;
@@ -776,6 +798,8 @@ class _UploadPanel extends StatelessWidget {
   final Future<void> Function() onRunUploadedFiles;
   final VoidCallback onClearUploadSelection;
   final Future<void> Function() onRunWikipediaFixtures;
+  final String extractionMode;
+  final ValueChanged<String> onExtractionModeChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -799,6 +823,35 @@ class _UploadPanel extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 16),
+            Row(
+              children: [
+                const Text('Extraction mode: '),
+                const SizedBox(width: 8),
+                DropdownButton<String>(
+                  value: extractionMode,
+                  onChanged: isLoading
+                      ? null
+                      : (value) {
+                          if (value != null) onExtractionModeChanged(value);
+                        },
+                  items: const [
+                    DropdownMenuItem(
+                      value: 'validated',
+                      child: Text('validated  (regex + LLM filter)'),
+                    ),
+                    DropdownMenuItem(
+                      value: 'llm',
+                      child: Text('llm  (pure Claude extraction)'),
+                    ),
+                    DropdownMenuItem(
+                      value: 'regex',
+                      child: Text('regex  (deprecated, candidate stage only)'),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
             Wrap(
               spacing: 12,
               runSpacing: 12,
@@ -2834,22 +2887,32 @@ int _signatureForEntities(List<EntityModel> entities) {
 }
 
 class Doc2GraphApi {
-  Future<JobResponse> createWikipediaFixtureJob(String baseUrl) async {
-    final response =
-        await http.post(Uri.parse('$baseUrl/api/v1/dev/fixtures/wikipedia'));
+  Future<JobResponse> createWikipediaFixtureJob(
+    String baseUrl, {
+    String? mode,
+  }) async {
+    final query = (mode != null && mode.isNotEmpty) ? '?mode=$mode' : '';
+    final response = await http.post(
+      Uri.parse('$baseUrl/api/v1/dev/fixtures/wikipedia$query'),
+    );
     return _decodeResponse(response, JobResponse.fromJson);
   }
 
   Future<JobResponse> createUploadJob(
     String baseUrl,
-    List<UploadDocumentDraft> drafts,
-  ) async {
+    List<UploadDocumentDraft> drafts, {
+    String? mode,
+  }) async {
+    final body = <String, Object?>{
+      'documents': drafts.map((draft) => draft.toJson()).toList(),
+    };
+    if (mode != null && mode.isNotEmpty) {
+      body['mode'] = mode;
+    }
     final response = await http.post(
       Uri.parse('$baseUrl/api/v1/jobs'),
       headers: const {'Content-Type': 'application/json'},
-      body: jsonEncode({
-        'documents': drafts.map((draft) => draft.toJson()).toList(),
-      }),
+      body: jsonEncode(body),
     );
     return _decodeResponse(response, JobResponse.fromJson);
   }

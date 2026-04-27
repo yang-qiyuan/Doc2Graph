@@ -14,7 +14,18 @@ import (
 )
 
 type Runner interface {
-	Run(ctx context.Context, documents []domain.Document) (domain.ExtractionResult, error)
+	Run(ctx context.Context, documents []domain.Document, mode string) (domain.ExtractionResult, error)
+}
+
+// ValidateExtractionMode checks `mode` against the values the Python
+// pipeline accepts. An empty string means "use the extractor's default".
+func ValidateExtractionMode(mode string) error {
+	switch mode {
+	case "", "regex", "validated", "llm":
+		return nil
+	default:
+		return fmt.Errorf("invalid extraction mode %q: must be one of regex, validated, llm", mode)
+	}
 }
 
 type PythonRunner struct {
@@ -34,7 +45,11 @@ func NewPythonRunner() *PythonRunner {
 	}
 }
 
-func (r *PythonRunner) Run(ctx context.Context, documents []domain.Document) (domain.ExtractionResult, error) {
+func (r *PythonRunner) Run(ctx context.Context, documents []domain.Document, mode string) (domain.ExtractionResult, error) {
+	if err := ValidateExtractionMode(mode); err != nil {
+		return domain.ExtractionResult{}, err
+	}
+
 	payloadDocuments := make([]map[string]any, 0, len(documents))
 	for _, doc := range documents {
 		payloadDocuments = append(payloadDocuments, map[string]any{
@@ -54,7 +69,11 @@ func (r *PythonRunner) Run(ctx context.Context, documents []domain.Document) (do
 
 	cmd := exec.CommandContext(ctx, r.Command, r.Args...)
 	cmd.Dir = r.WorkDir
-	cmd.Env = withEnv(cmd.Environ(), "PYTHONPATH", r.WorkDir)
+	env := withEnv(cmd.Environ(), "PYTHONPATH", r.WorkDir)
+	if mode != "" {
+		env = withEnv(env, "EXTRACTION_MODE", mode)
+	}
+	cmd.Env = env
 	cmd.Stdin = bytes.NewReader(input)
 
 	var stdout bytes.Buffer

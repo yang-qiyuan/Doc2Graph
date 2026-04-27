@@ -1,12 +1,21 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 import multiprocessing
 import os
 import re
+import threading
 
 from .models import Entity, ExtractionResult, Mention, Relation
+from .resolution import (
+    block_candidate_pairs,
+    build_evidence_pack,
+    fetch_wikipedia_summary,
+    is_obviously_incompatible,
+    transitive_closure,
+)
 
 # Import agents for LLM-based extraction/validation (optional, controlled by env var)
 try:
@@ -41,31 +50,75 @@ _TRANSLATED_RE = re.compile(
 _EDITED_RE = re.compile(
     r"\b(?:edited)\s+(?:the\s+)?[\"']([^\"']+)[\"']"
 )
+# NOTE: the inner `(?:\s+[\wÀ-ÿ.-]+)*?` is intentionally non-greedy. With a
+# greedy `*`, the engine extends each capture to the LAST valid terminator
+# (often end-of-string), swallowing trailing clauses — e.g. "collaborated
+# with Albert Einstein on quantum mechanics and won..." captures
+# "Albert Einstein on quantum mechanics" instead of "Albert Einstein".
 _INFLUENCED_BY_RE = re.compile(
-    r"\b(?:influenced|inspired|mentored|guided)\s+by\s+([A-Z][\wÀ-ÿ.-]+(?:\s+[\wÀ-ÿ.-]+)*)(?:\s+(?:and|who|,|;|\.)|$)",
+    r"\b(?:influenced|inspired|mentored|guided)\s+by\s+([A-Z][\wÀ-ÿ.-]+(?:\s+[\wÀ-ÿ.-]+)*?)(?:\s+(?:and|who|,|;|\.)|$)",
     re.UNICODE
 )
 _COLLABORATED_WITH_RE = re.compile(
-    r"\b(?:collaborated|worked|partnered)\s+(?:together\s+)?with\s+([A-Z][\wÀ-ÿ.-]+(?:\s+[\wÀ-ÿ.-]+)*)(?:\s+(?:on|to|and|,|;|\.)|$)",
+    r"\b(?:collaborated|worked|partnered)\s+(?:together\s+)?with\s+([A-Z][\wÀ-ÿ.-]+(?:\s+[\wÀ-ÿ.-]+)*?)(?:\s+(?:on|to|and|,|;|\.)|$)",
     re.UNICODE
 )
 _FAMILY_OF_RE = re.compile(
-    r"\b(?:son|daughter|brother|sister|father|mother|parent|child|spouse|wife|husband)\s+of\s+([A-ZÀ-ÿ][\wÀ-ÿ.-]+(?:\s+[\wÀ-ÿ.-]+)*)(?:\s+(?:and|who|was|were|,|;|\.)|$)",
+    r"\b(?:son|daughter|brother|sister|father|mother|parent|child|spouse|wife|husband)\s+of\s+([A-ZÀ-ÿ][\wÀ-ÿ.-]+(?:\s+[\wÀ-ÿ.-]+)*?)(?:\s+(?:and|who|was|were|,|;|\.)|$)",
     re.UNICODE
 )
 _STUDENT_OF_RE = re.compile(
-    r"\b(?:student|pupil|apprentice|disciple)\s+of\s+([A-Z][\wÀ-ÿ.-]+(?:\s+[\wÀ-ÿ.-]+)*)(?:\s+(?:and|who|was|were|,|;|\.)|$)",
+    r"\b(?:student|pupil|apprentice|disciple)\s+of\s+([A-Z][\wÀ-ÿ.-]+(?:\s+[\wÀ-ÿ.-]+)*?)(?:\s+(?:and|who|was|were|,|;|\.)|$)",
     re.UNICODE
 )
 _MARRIED_TO_RE = re.compile(
-    r"\bmarried\s+([A-Z][\wÀ-ÿ.-]+(?:\s+[\wÀ-ÿ.-]+)*)(?:\s+(?:in|on|at|and|,|;)|$)",
+    r"\bmarried\s+([A-Z][\wÀ-ÿ.-]+(?:\s+[\wÀ-ÿ.-]+)*?)(?:\s+(?:in|on|at|and|,|;)|$)",
     re.UNICODE
 )
 # Additional pattern for "met [Person]" relationships
 _MET_PERSON_RE = re.compile(
-    r"\bmet\s+([A-Z][\wÀ-ÿ.-]+(?:\s+[\wÀ-ÿ.-]+)*)(?:\s+(?:in|at|and|who|,|;|\.)|$)",
+    r"\bmet\s+([A-Z][\wÀ-ÿ.-]+(?:\s+[\wÀ-ÿ.-]+)*?)(?:\s+(?:in|at|and|who|,|;|\.)|$)",
     re.UNICODE
 )
+
+
+# Mirror of the Go-side `relationTypeConstraints` map in
+# `backend/internal/domain/validation.go`. Anything outside this map will be
+# rejected by the backend's `ValidateExtractionResult`, so we strip those
+# relations here rather than letting the whole job fail. The LLM-driven
+# `validated` mode can occasionally type a new entity wrong (e.g.,
+# "Prussian Academy of Sciences" as Work instead of Organization) and emit
+# a relation pointing to it; this filter is the safety net.
+_RELATION_TYPE_CONSTRAINTS: dict[str, tuple[str, str]] = {
+    "influenced_by": ("Person", "Person"),
+    "collaborated_with": ("Person", "Person"),
+    "family_of": ("Person", "Person"),
+    "student_of": ("Person", "Person"),
+    "worked_at": ("Person", "Organization"),
+    "studied_at": ("Person", "Organization"),
+    "founded": ("Person", "Organization"),
+    "member_of": ("Person", "Organization"),
+    "born_in": ("Person", "Place"),
+    "died_in": ("Person", "Place"),
+    "lived_in": ("Person", "Place"),
+    "authored": ("Person", "Work"),
+    "translated": ("Person", "Work"),
+    "edited": ("Person", "Work"),
+    "born_on": ("Person", "Time"),
+    "died_on": ("Person", "Time"),
+}
+
+
+def _is_relation_type_pair_valid(
+    predicate: str, subject_type: str, object_type: str
+) -> bool:
+    """Return True iff (subject_type, predicate, object_type) is allowed by
+    the ontology. Unknown predicates are rejected — the backend will too."""
+    constraint = _RELATION_TYPE_CONSTRAINTS.get(predicate)
+    if constraint is None:
+        return False
+    expected_subject, expected_object = constraint
+    return subject_type == expected_subject and object_type == expected_object
 
 
 # Module-level worker functions for multiprocessing
@@ -91,7 +144,8 @@ class ExtractionPipeline:
 
         # Determine extraction mode
         # Priority: EXTRACTION_MODE > ENABLE_AGENTIC_LOOP (for backward compatibility)
-        extraction_mode = os.getenv("EXTRACTION_MODE", "").lower()
+        raw_mode = os.getenv("EXTRACTION_MODE", "")
+        extraction_mode = raw_mode.lower()
         if not extraction_mode:
             # Backward compatibility: map ENABLE_AGENTIC_LOOP to new modes
             if os.getenv("ENABLE_AGENTIC_LOOP", "false").lower() == "true":
@@ -103,7 +157,19 @@ class ExtractionPipeline:
         if extraction_mode not in ["regex", "validated", "llm"]:
             raise ValueError(
                 f"Invalid EXTRACTION_MODE: {extraction_mode}. "
-                "Must be one of: regex, validated, llm"
+                "Must be one of: validated (default A方案), llm (B方案). "
+                "`regex` is deprecated and runs only the candidate stage."
+            )
+
+        if raw_mode and extraction_mode == "regex":
+            import sys
+
+            print(
+                "WARNING: EXTRACTION_MODE=regex is deprecated. The regex pass "
+                "is now the candidate stage of `validated` mode; running it "
+                "alone ships high-recall noisy output without LLM precision "
+                "filtering. Prefer EXTRACTION_MODE=validated.",
+                file=sys.stderr,
             )
 
         if extraction_mode in ["validated", "llm"] and not AGENT_AVAILABLE:
@@ -175,26 +241,31 @@ class ExtractionPipeline:
             # Validation stage - optional Claude-based refinement for "validated" mode
             if extraction_mode == "validated":
                 agent = ValidationAgent()
-                validated_entities: list[Entity] = []
-                validated_relations: list[Relation] = []
 
-                for document in documents:
-                    # Get entities and relations for this document
+                def _validate_one(document: dict) -> tuple[list[dict], list[dict]]:
                     doc_entities = [e for e in raw_entities if e.source_doc == document["id"]]
                     doc_relations = [r for r in raw_relations if r.source_doc == document["id"]]
-
-                    # Convert dataclasses to dicts for validation
                     entity_dicts = [asdict(e) for e in doc_entities]
                     relation_dicts = [asdict(r) for r in doc_relations]
+                    return agent.validate(document, entity_dicts, relation_dicts)
 
-                    # Call Claude for validation
-                    refined_entity_dicts, refined_relation_dicts = agent.validate(
-                        document, entity_dicts, relation_dicts
+                use_parallel_llm = os.getenv("USE_PARALLEL_LLM", "true").lower() == "true"
+                if use_parallel_llm and len(documents) > 1:
+                    workers = min(
+                        len(documents),
+                        int(os.getenv("EXTRACTION_LLM_WORKERS", "8")),
                     )
+                    with ThreadPoolExecutor(max_workers=workers) as pool:
+                        # `executor.map` preserves input ordering, which matters
+                        # for the existing tests that compare result lists.
+                        per_doc_results = list(pool.map(_validate_one, documents))
+                else:
+                    per_doc_results = [_validate_one(doc) for doc in documents]
 
-                    # Convert validated dicts back to dataclasses
+                validated_entities: list[Entity] = []
+                validated_relations: list[Relation] = []
+                for refined_entity_dicts, refined_relation_dicts in per_doc_results:
                     for entity_dict in refined_entity_dicts:
-                        # Reconstruct mentions from dicts
                         mentions = [Mention(**m) for m in entity_dict.get("mentions", [])]
                         validated_entities.append(
                             Entity(
@@ -206,7 +277,6 @@ class ExtractionPipeline:
                                 aliases=entity_dict.get("aliases", []),
                             )
                         )
-
                     for relation_dict in refined_relation_dicts:
                         validated_relations.append(
                             Relation(
@@ -226,20 +296,10 @@ class ExtractionPipeline:
                 raw_entities = validated_entities
                 raw_relations = validated_relations
 
-                # Cross-document fusion - merge duplicate entities across documents
-                import sys
-                print(f"\nPerforming cross-document entity fusion on {len(raw_entities)} entities...", file=sys.stderr)
-                entity_dicts = [asdict(e) for e in raw_entities]
-                fusion_merges = agent.cross_document_fusion(entity_dicts)
-
-                # Apply fusion merges
-                if fusion_merges:
-                    raw_entities, raw_relations = self._apply_fusion_merges(
-                        raw_entities, raw_relations, fusion_merges
-                    )
-                    print(f"Fusion complete: {len(fusion_merges)} entity merges applied", file=sys.stderr)
-                else:
-                    print("No cross-document duplicates detected", file=sys.stderr)
+                # Cross-document entity resolution: block → resolve_pair → transitive closure.
+                raw_entities, raw_relations = self._resolve_cross_document(
+                    documents, raw_entities, raw_relations, agent
+                )
 
         entities, relations = self._normalize_graph(raw_entities, raw_relations)
         result = ExtractionResult(documents=export_documents, entities=entities, relations=relations)
@@ -276,65 +336,76 @@ class ExtractionPipeline:
             )
         )
 
-        for name, entity_type in self._extract_secondary_entity_values(content):
-            mention = self._find_mention(document_id, content, name)
+        for name, entity_type, char_start, char_end in self._extract_secondary_entity_values(content):
             entities.append(
                 Entity(
                     id=f"{document_id}:{entity_type.lower()}:{self._canonical_key(entity_type, name)}",
                     name=name,
                     type=entity_type,
                     source_doc=document_id,
-                    mentions=[mention],
+                    mentions=[Mention(doc_id=document_id, char_start=char_start, char_end=char_end)],
                 )
             )
 
         return entities
 
-    def _extract_secondary_entity_values(self, content: str) -> list[tuple[str, str]]:
-        values: list[tuple[str, str]] = []
+    def _extract_secondary_entity_values(self, content: str) -> list[tuple[str, str, int, int]]:
+        values: list[tuple[str, str, int, int]] = []
 
-        # Extract Time entities
-        date_match = _DATE_RANGE_RE.search(content)
-        if date_match:
-            values.append((date_match.group(1).strip(), "Time"))
-            values.append((date_match.group(2).strip(), "Time"))
+        # Time entities — date range: two groups (born year, died year)
+        for date_match in _DATE_RANGE_RE.finditer(content):
+            born = date_match.group(1).strip()
+            died = date_match.group(2).strip()
+            if born:
+                values.append((born, "Time", date_match.start(1), date_match.end(1)))
+            if died:
+                values.append((died, "Time", date_match.start(2), date_match.end(2)))
 
-        # Extract Place entities
+        # Place entities
         for pattern in (_BORN_IN_RE, _DIED_IN_RE, _LIVED_IN_RE):
-            match = pattern.search(content)
-            if match:
-                values.append((self._clean_place(match.group(1)), "Place"))
+            for match in pattern.finditer(content):
+                place = self._clean_place(match.group(1))
+                if place:
+                    values.append((place, "Place", match.start(1), match.end(1)))
 
-        # Extract Organization entities
+        # Organization entities
         for pattern in (_WORKED_AT_RE, _STUDIED_AT_RE, _FOUNDED_RE, _MEMBER_OF_RE):
-            match = pattern.search(content)
-            if match:
-                values.append((self._clean_org(match.group(1)), "Organization"))
+            for match in pattern.finditer(content):
+                org = self._clean_org(match.group(1))
+                if org:
+                    values.append((org, "Organization", match.start(1), match.end(1)))
 
-        # Extract Work entities
+        # Work entities (titles in quotes)
         for pattern in (_AUTHORED_RE, _TRANSLATED_RE, _EDITED_RE):
-            match = pattern.search(content)
-            if match:
+            for match in pattern.finditer(content):
                 work_title = match.group(1).strip()
                 if work_title:
-                    values.append((work_title, "Work"))
+                    values.append((work_title, "Work", match.start(1), match.end(1)))
 
-        # Extract Person entities (for PERSON-PERSON relations)
-        for pattern in (_INFLUENCED_BY_RE, _COLLABORATED_WITH_RE, _FAMILY_OF_RE, _STUDENT_OF_RE, _MARRIED_TO_RE, _MET_PERSON_RE):
-            match = pattern.search(content)
-            if match:
+        # Person entities (for PERSON-PERSON relations)
+        for pattern in (
+            _INFLUENCED_BY_RE,
+            _COLLABORATED_WITH_RE,
+            _FAMILY_OF_RE,
+            _STUDENT_OF_RE,
+            _MARRIED_TO_RE,
+            _MET_PERSON_RE,
+        ):
+            for match in pattern.finditer(content):
                 person_name = self._clean_person(match.group(1))
                 if person_name:
-                    values.append((person_name, "Person"))
+                    values.append((person_name, "Person", match.start(1), match.end(1)))
 
-        deduped: list[tuple[str, str]] = []
-        seen: set[tuple[str, str]] = set()
-        for name, entity_type in values:
-            key = (entity_type, self._canonical_key(entity_type, name))
+        # Deduplicate by (type, canonical_key, span). Different spans of the
+        # same entity are kept so that _normalize_graph can collect all mentions.
+        deduped: list[tuple[str, str, int, int]] = []
+        seen: set[tuple[str, str, int, int]] = set()
+        for name, entity_type, start, end in values:
+            key = (entity_type, self._canonical_key(entity_type, name), start, end)
             if key in seen or not name:
                 continue
             seen.add(key)
-            deduped.append((name, entity_type))
+            deduped.append((name, entity_type, start, end))
 
         return deduped
 
@@ -349,333 +420,438 @@ class ExtractionPipeline:
         relations: list[Relation] = []
         relation_counter = 0
 
+        def emit(predicate: str, object_id: str, evidence: str, confidence: float, char_start: int, char_end: int) -> None:
+            nonlocal relation_counter
+            relations.append(
+                self._build_relation(
+                    relation_id=f"{document_id}:R{relation_counter}",
+                    subject=person_id,
+                    predicate=predicate,
+                    object_id=object_id,
+                    evidence=evidence,
+                    source_doc=document_id,
+                    content=content,
+                    confidence=confidence,
+                    char_start=char_start,
+                    char_end=char_end,
+                )
+            )
+            relation_counter += 1
+
         # PERSON-TIME relations
-        date_match = _DATE_RANGE_RE.search(content)
-        if date_match:
+        for date_match in _DATE_RANGE_RE.finditer(content):
             born = date_match.group(1).strip()
             died = date_match.group(2).strip()
-            relations.append(
-                self._build_relation(
-                    relation_id=f"{document_id}:R{relation_counter}",
-                    subject=person_id,
-                    predicate="born_on",
-                    object_id=f"{document_id}:time:{self._canonical_key('Time', born)}",
-                    evidence=born,
-                    source_doc=document_id,
-                    content=content,
-                    confidence=0.88,
+            if born:
+                emit(
+                    "born_on",
+                    f"{document_id}:time:{self._canonical_key('Time', born)}",
+                    born,
+                    0.88,
+                    date_match.start(1),
+                    date_match.end(1),
                 )
-            )
-            relation_counter += 1
-            relations.append(
-                self._build_relation(
-                    relation_id=f"{document_id}:R{relation_counter}",
-                    subject=person_id,
-                    predicate="died_on",
-                    object_id=f"{document_id}:time:{self._canonical_key('Time', died)}",
-                    evidence=died,
-                    source_doc=document_id,
-                    content=content,
-                    confidence=0.88,
+            if died:
+                emit(
+                    "died_on",
+                    f"{document_id}:time:{self._canonical_key('Time', died)}",
+                    died,
+                    0.88,
+                    date_match.start(2),
+                    date_match.end(2),
                 )
-            )
-            relation_counter += 1
 
-        # PERSON-PLACE relations
-        born_in_match = _BORN_IN_RE.search(content)
-        if born_in_match:
-            place = self._clean_place(born_in_match.group(1))
-            relations.append(
-                self._build_relation(
-                    relation_id=f"{document_id}:R{relation_counter}",
-                    subject=person_id,
-                    predicate="born_in",
-                    object_id=f"{document_id}:place:{self._canonical_key('Place', place)}",
-                    evidence=place,
-                    source_doc=document_id,
-                    content=content,
-                    confidence=0.82,
+        # Person → Place patterns
+        place_patterns = (
+            (_BORN_IN_RE, "born_in", 0.82),
+            (_DIED_IN_RE, "died_in", 0.79),
+            (_LIVED_IN_RE, "lived_in", 0.75),
+        )
+        for pattern, predicate, confidence in place_patterns:
+            for match in pattern.finditer(content):
+                place = self._clean_place(match.group(1))
+                if not place:
+                    continue
+                emit(
+                    predicate,
+                    f"{document_id}:place:{self._canonical_key('Place', place)}",
+                    place,
+                    confidence,
+                    match.start(1),
+                    match.end(1),
                 )
-            )
-            relation_counter += 1
 
-        died_in_match = _DIED_IN_RE.search(content)
-        if died_in_match:
-            place = self._clean_place(died_in_match.group(1))
-            relations.append(
-                self._build_relation(
-                    relation_id=f"{document_id}:R{relation_counter}",
-                    subject=person_id,
-                    predicate="died_in",
-                    object_id=f"{document_id}:place:{self._canonical_key('Place', place)}",
-                    evidence=place,
-                    source_doc=document_id,
-                    content=content,
-                    confidence=0.79,
+        # Person → Organization patterns
+        org_patterns = (
+            (_WORKED_AT_RE, "worked_at", 0.72),
+            (_STUDIED_AT_RE, "studied_at", 0.78),
+            (_FOUNDED_RE, "founded", 0.85),
+            (_MEMBER_OF_RE, "member_of", 0.76),
+        )
+        for pattern, predicate, confidence in org_patterns:
+            for match in pattern.finditer(content):
+                org = self._clean_org(match.group(1))
+                if not org:
+                    continue
+                emit(
+                    predicate,
+                    f"{document_id}:organization:{self._canonical_key('Organization', org)}",
+                    org,
+                    confidence,
+                    match.start(1),
+                    match.end(1),
                 )
-            )
-            relation_counter += 1
 
-        lived_in_match = _LIVED_IN_RE.search(content)
-        if lived_in_match:
-            place = self._clean_place(lived_in_match.group(1))
-            relations.append(
-                self._build_relation(
-                    relation_id=f"{document_id}:R{relation_counter}",
-                    subject=person_id,
-                    predicate="lived_in",
-                    object_id=f"{document_id}:place:{self._canonical_key('Place', place)}",
-                    evidence=place,
-                    source_doc=document_id,
-                    content=content,
-                    confidence=0.75,
+        # Person → Work patterns
+        work_patterns = (
+            (_AUTHORED_RE, "authored", 0.83),
+            (_TRANSLATED_RE, "translated", 0.80),
+            (_EDITED_RE, "edited", 0.77),
+        )
+        for pattern, predicate, confidence in work_patterns:
+            for match in pattern.finditer(content):
+                work_title = match.group(1).strip()
+                if not work_title:
+                    continue
+                emit(
+                    predicate,
+                    f"{document_id}:work:{self._canonical_key('Work', work_title)}",
+                    work_title,
+                    confidence,
+                    match.start(1),
+                    match.end(1),
                 )
-            )
-            relation_counter += 1
 
-        # PERSON-ORG relations
-        worked_at_match = _WORKED_AT_RE.search(content)
-        if worked_at_match:
-            org = self._clean_org(worked_at_match.group(1))
-            relations.append(
-                self._build_relation(
-                    relation_id=f"{document_id}:R{relation_counter}",
-                    subject=person_id,
-                    predicate="worked_at",
-                    object_id=f"{document_id}:organization:{self._canonical_key('Organization', org)}",
-                    evidence=org,
-                    source_doc=document_id,
-                    content=content,
-                    confidence=0.72,
+        # Person → Person patterns. _MARRIED_TO_RE is mapped to family_of and
+        # _MET_PERSON_RE to collaborated_with to align with the ontology.
+        person_patterns = (
+            (_INFLUENCED_BY_RE, "influenced_by", 0.70),
+            (_COLLABORATED_WITH_RE, "collaborated_with", 0.74),
+            (_FAMILY_OF_RE, "family_of", 0.81),
+            (_STUDENT_OF_RE, "student_of", 0.79),
+            (_MARRIED_TO_RE, "family_of", 0.85),
+            (_MET_PERSON_RE, "collaborated_with", 0.65),
+        )
+        for pattern, predicate, confidence in person_patterns:
+            for match in pattern.finditer(content):
+                person_name = self._clean_person(match.group(1))
+                if not person_name:
+                    continue
+                object_id = f"{document_id}:person:{self._canonical_key('Person', person_name)}"
+                if object_id == person_id:
+                    continue
+                emit(
+                    predicate,
+                    object_id,
+                    person_name,
+                    confidence,
+                    match.start(1),
+                    match.end(1),
                 )
-            )
-            relation_counter += 1
-
-        studied_at_match = _STUDIED_AT_RE.search(content)
-        if studied_at_match:
-            org = self._clean_org(studied_at_match.group(1))
-            relations.append(
-                self._build_relation(
-                    relation_id=f"{document_id}:R{relation_counter}",
-                    subject=person_id,
-                    predicate="studied_at",
-                    object_id=f"{document_id}:organization:{self._canonical_key('Organization', org)}",
-                    evidence=org,
-                    source_doc=document_id,
-                    content=content,
-                    confidence=0.78,
-                )
-            )
-            relation_counter += 1
-
-        founded_match = _FOUNDED_RE.search(content)
-        if founded_match:
-            org = self._clean_org(founded_match.group(1))
-            relations.append(
-                self._build_relation(
-                    relation_id=f"{document_id}:R{relation_counter}",
-                    subject=person_id,
-                    predicate="founded",
-                    object_id=f"{document_id}:organization:{self._canonical_key('Organization', org)}",
-                    evidence=org,
-                    source_doc=document_id,
-                    content=content,
-                    confidence=0.85,
-                )
-            )
-            relation_counter += 1
-
-        member_of_match = _MEMBER_OF_RE.search(content)
-        if member_of_match:
-            org = self._clean_org(member_of_match.group(1))
-            relations.append(
-                self._build_relation(
-                    relation_id=f"{document_id}:R{relation_counter}",
-                    subject=person_id,
-                    predicate="member_of",
-                    object_id=f"{document_id}:organization:{self._canonical_key('Organization', org)}",
-                    evidence=org,
-                    source_doc=document_id,
-                    content=content,
-                    confidence=0.76,
-                )
-            )
-            relation_counter += 1
-
-        # PERSON-WORK relations
-        authored_match = _AUTHORED_RE.search(content)
-        if authored_match:
-            work_title = authored_match.group(1).strip()
-            relations.append(
-                self._build_relation(
-                    relation_id=f"{document_id}:R{relation_counter}",
-                    subject=person_id,
-                    predicate="authored",
-                    object_id=f"{document_id}:work:{self._canonical_key('Work', work_title)}",
-                    evidence=work_title,
-                    source_doc=document_id,
-                    content=content,
-                    confidence=0.83,
-                )
-            )
-            relation_counter += 1
-
-        translated_match = _TRANSLATED_RE.search(content)
-        if translated_match:
-            work_title = translated_match.group(1).strip()
-            relations.append(
-                self._build_relation(
-                    relation_id=f"{document_id}:R{relation_counter}",
-                    subject=person_id,
-                    predicate="translated",
-                    object_id=f"{document_id}:work:{self._canonical_key('Work', work_title)}",
-                    evidence=work_title,
-                    source_doc=document_id,
-                    content=content,
-                    confidence=0.80,
-                )
-            )
-            relation_counter += 1
-
-        edited_match = _EDITED_RE.search(content)
-        if edited_match:
-            work_title = edited_match.group(1).strip()
-            relations.append(
-                self._build_relation(
-                    relation_id=f"{document_id}:R{relation_counter}",
-                    subject=person_id,
-                    predicate="edited",
-                    object_id=f"{document_id}:work:{self._canonical_key('Work', work_title)}",
-                    evidence=work_title,
-                    source_doc=document_id,
-                    content=content,
-                    confidence=0.77,
-                )
-            )
-            relation_counter += 1
-
-        # PERSON-PERSON relations
-        influenced_by_match = _INFLUENCED_BY_RE.search(content)
-        if influenced_by_match:
-            person_name = self._clean_person(influenced_by_match.group(1))
-            object_id = f"{document_id}:person:{self._canonical_key('Person', person_name)}"
-            # Skip self-referential relations
-            if object_id != person_id:
-                relations.append(
-                    self._build_relation(
-                        relation_id=f"{document_id}:R{relation_counter}",
-                        subject=person_id,
-                        predicate="influenced_by",
-                        object_id=object_id,
-                        evidence=person_name,
-                        source_doc=document_id,
-                        content=content,
-                        confidence=0.70,
-                    )
-                )
-                relation_counter += 1
-
-        collaborated_with_match = _COLLABORATED_WITH_RE.search(content)
-        if collaborated_with_match:
-            person_name = self._clean_person(collaborated_with_match.group(1))
-            object_id = f"{document_id}:person:{self._canonical_key('Person', person_name)}"
-            # Skip self-referential relations
-            if object_id != person_id:
-                relations.append(
-                    self._build_relation(
-                        relation_id=f"{document_id}:R{relation_counter}",
-                        subject=person_id,
-                        predicate="collaborated_with",
-                        object_id=object_id,
-                        evidence=person_name,
-                        source_doc=document_id,
-                        content=content,
-                        confidence=0.74,
-                    )
-                )
-                relation_counter += 1
-
-        family_of_match = _FAMILY_OF_RE.search(content)
-        if family_of_match:
-            person_name = self._clean_person(family_of_match.group(1))
-            object_id = f"{document_id}:person:{self._canonical_key('Person', person_name)}"
-            # Skip self-referential relations
-            if object_id != person_id:
-                relations.append(
-                    self._build_relation(
-                        relation_id=f"{document_id}:R{relation_counter}",
-                        subject=person_id,
-                        predicate="family_of",
-                        object_id=object_id,
-                        evidence=person_name,
-                        source_doc=document_id,
-                        content=content,
-                        confidence=0.81,
-                    )
-                )
-                relation_counter += 1
-
-        student_of_match = _STUDENT_OF_RE.search(content)
-        if student_of_match:
-            person_name = self._clean_person(student_of_match.group(1))
-            object_id = f"{document_id}:person:{self._canonical_key('Person', person_name)}"
-            # Skip self-referential relations
-            if object_id != person_id:
-                relations.append(
-                    self._build_relation(
-                        relation_id=f"{document_id}:R{relation_counter}",
-                        subject=person_id,
-                        predicate="student_of",
-                        object_id=object_id,
-                        evidence=person_name,
-                        source_doc=document_id,
-                        content=content,
-                        confidence=0.79,
-                    )
-                )
-                relation_counter += 1
-
-        married_to_match = _MARRIED_TO_RE.search(content)
-        if married_to_match:
-            person_name = self._clean_person(married_to_match.group(1))
-            object_id = f"{document_id}:person:{self._canonical_key('Person', person_name)}"
-            # Skip self-referential relations
-            if object_id != person_id:
-                relations.append(
-                    self._build_relation(
-                        relation_id=f"{document_id}:R{relation_counter}",
-                        subject=person_id,
-                        predicate="family_of",
-                        object_id=object_id,
-                        evidence=person_name,
-                        source_doc=document_id,
-                        content=content,
-                        confidence=0.85,
-                    )
-                )
-                relation_counter += 1
-
-        met_person_match = _MET_PERSON_RE.search(content)
-        if met_person_match:
-            person_name = self._clean_person(met_person_match.group(1))
-            object_id = f"{document_id}:person:{self._canonical_key('Person', person_name)}"
-            # Skip self-referential relations
-            if object_id != person_id:
-                relations.append(
-                    self._build_relation(
-                        relation_id=f"{document_id}:R{relation_counter}",
-                        subject=person_id,
-                        predicate="collaborated_with",
-                        object_id=object_id,
-                        evidence=person_name,
-                        source_doc=document_id,
-                        content=content,
-                        confidence=0.65,
-                    )
-                )
-                relation_counter += 1
 
         return relations
+
+    def _resolve_cross_document(
+        self,
+        documents: list[dict],
+        entities: list[Entity],
+        relations: list[Relation],
+        agent,
+        wiki_fetcher=None,
+    ) -> tuple[list[Entity], list[Relation]]:
+        """
+        Run the entity-resolution pipeline:
+
+        1. Block candidate pairs cheaply by name similarity within type.
+        2. For each surviving pair, build evidence packs and ask the LLM
+           (`agent.resolve_pair`). If confidence is low, escalate by
+           expanding evidence — Tier 1 attaches the full source documents,
+           Tier 2 attaches Wikipedia summaries.
+        3. Apply transitive closure: if {A,B} and {B,C} are merged, fold C
+           into A's cluster.
+        4. Apply merges via the existing `_apply_fusion_merges` utility.
+        5. Re-validate post-merge relation buckets where multiple relations
+           collapsed onto the same (subject, predicate, object) shape.
+        """
+        import sys
+
+        if len(entities) < 2:
+            return entities, relations
+
+        confidence_threshold = float(
+            os.getenv("FUSION_CONFIDENCE_THRESHOLD", "0.5")
+        )
+        sparse_threshold = int(os.getenv("FUSION_SPARSE_THRESHOLD", "2"))
+        if wiki_fetcher is None:
+            wiki_fetcher = fetch_wikipedia_summary
+
+        entity_dicts = [asdict(e) for e in entities]
+        relation_dicts = [asdict(r) for r in relations]
+        entities_by_id = {e["id"]: e for e in entity_dicts}
+        documents_by_id = {d.get("id", ""): d for d in documents}
+
+        # Per-job caches: same (A,B) pair never resolved twice; each
+        # canonical name fetched from Wikipedia at most once. The wiki
+        # cache is shared between blocking-time enrichment and tier-2
+        # disambiguation so a name is at most one network round trip.
+        # Both are accessed concurrently when USE_PARALLEL_LLM is on.
+        pair_cache: dict[frozenset[str], dict] = {}
+        wiki_cache: dict[str, str | None] = {}
+        wiki_lock = threading.Lock()
+
+        def get_wiki(name: str) -> str | None:
+            if not name:
+                return None
+            with wiki_lock:
+                if name in wiki_cache:
+                    return wiki_cache[name]
+                # Mark as in-flight by inserting None first to avoid duplicate
+                # fetches under concurrent access; replaced after the fetch.
+            summary = wiki_fetcher(name)
+            with wiki_lock:
+                wiki_cache[name] = summary
+            return summary
+
+        candidate_pairs, unresolved = block_candidate_pairs(
+            entity_dicts,
+            relation_dicts,
+            wiki_fetcher=get_wiki,
+            sparse_relation_threshold=sparse_threshold,
+        )
+        print(
+            f"\nEntity resolution: {len(candidate_pairs)} candidate pair(s) "
+            "from multi-signal blocking (attribute + name-token + wiki)",
+            file=sys.stderr,
+        )
+        if unresolved:
+            print(
+                f"  {len(unresolved)} sparse entit{'y' if len(unresolved) == 1 else 'ies'} "
+                "had no resolution signal — left unmerged: "
+                f"{unresolved[:10]}{'...' if len(unresolved) > 10 else ''}",
+                file=sys.stderr,
+            )
+
+        # Pre-resolve filter: drop pairs whose structured evidence already
+        # rules out a merge (different born_on years, different born_in
+        # places, etc.). Pure Python — saves the Claude round-trip per pair.
+        accepted_pairs: list[tuple[str, str]] = []
+        pre_dropped = 0
+        for id_a, id_b in candidate_pairs:
+            entity_a = entities_by_id.get(id_a)
+            entity_b = entities_by_id.get(id_b)
+            if not entity_a or not entity_b:
+                continue
+            reason = is_obviously_incompatible(
+                entity_a, entity_b, relation_dicts, entities_by_id
+            )
+            if reason:
+                pre_dropped += 1
+                continue
+            accepted_pairs.append((id_a, id_b))
+
+        if pre_dropped:
+            print(
+                f"  pre-resolve filter dropped {pre_dropped} obviously-"
+                f"incompatible pair(s) without an LLM call",
+                file=sys.stderr,
+            )
+        candidate_pairs = accepted_pairs
+
+        def _resolve_one(pair: tuple[str, str]) -> tuple[str, str, dict] | None:
+            id_a, id_b = pair
+            entity_a = entities_by_id.get(id_a)
+            entity_b = entities_by_id.get(id_b)
+            if not entity_a or not entity_b:
+                return None
+            pack_a = build_evidence_pack(
+                entity_a,
+                entities_by_id=entities_by_id,
+                relations=relation_dicts,
+                documents_by_id=documents_by_id,
+            ).to_prompt_dict()
+            pack_b = build_evidence_pack(
+                entity_b,
+                entities_by_id=entities_by_id,
+                relations=relation_dicts,
+                documents_by_id=documents_by_id,
+            ).to_prompt_dict()
+            decision = self._resolve_pair_with_escalation(
+                agent,
+                pack_a,
+                pack_b,
+                entity_a,
+                entity_b,
+                documents_by_id,
+                confidence_threshold,
+                get_wiki,
+            )
+            pair_cache[frozenset({id_a, id_b})] = decision
+            return id_a, id_b, decision
+
+        use_parallel_llm = os.getenv("USE_PARALLEL_LLM", "true").lower() == "true"
+        results: list[tuple[str, str, dict]] = []
+        if use_parallel_llm and len(candidate_pairs) > 1:
+            workers = min(
+                len(candidate_pairs),
+                int(os.getenv("EXTRACTION_LLM_WORKERS", "8")),
+            )
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                for outcome in pool.map(_resolve_one, candidate_pairs):
+                    if outcome is not None:
+                        results.append(outcome)
+        else:
+            for pair in candidate_pairs:
+                outcome = _resolve_one(pair)
+                if outcome is not None:
+                    results.append(outcome)
+
+        confirmed_pairs: list[tuple[str, str]] = []
+        for id_a, id_b, decision in results:
+            if decision.get("same_entity") and decision.get("confidence", 0.0) >= confidence_threshold:
+                confirmed_pairs.append((id_a, id_b))
+                print(
+                    f"  ✓ merge ({id_a} ↔ {id_b}) "
+                    f"confidence={decision['confidence']:.2f} "
+                    f"tier={decision.get('tier', 0)} "
+                    f"reason={decision.get('reason', '')!r}",
+                    file=sys.stderr,
+                )
+
+        if not confirmed_pairs:
+            print("  no cross-document merges confirmed", file=sys.stderr)
+            return entities, relations
+
+        clusters = transitive_closure(confirmed_pairs)
+        fusion_merges: list[tuple[str, str, list[str]]] = []
+        for source_id, root_id in clusters.items():
+            if source_id == root_id:
+                continue
+            fusion_merges.append((source_id, root_id, []))
+
+        if not fusion_merges:
+            return entities, relations
+
+        merged_entities, merged_relations = self._apply_fusion_merges(
+            entities, relations, fusion_merges
+        )
+        print(
+            f"  applied {len(fusion_merges)} merges across {len({r for _, r, _ in fusion_merges})} cluster(s)",
+            file=sys.stderr,
+        )
+
+        merged_entities, merged_relations = self._review_post_merge_relations(
+            merged_entities, merged_relations, agent
+        )
+
+        return merged_entities, merged_relations
+
+    def _resolve_pair_with_escalation(
+        self,
+        agent,
+        pack_a: dict,
+        pack_b: dict,
+        entity_a: dict,
+        entity_b: dict,
+        documents_by_id: dict[str, dict],
+        confidence_threshold: float,
+        get_wiki,
+    ) -> dict:
+        """
+        Three-tier resolution: basic pack → +full source docs → +Wikipedia.
+        Tiers 1 and 2 only fire if the previous tier returned a confidence
+        below `confidence_threshold` — the document evidence we already have
+        is consulted before reaching for the network.
+        """
+        import sys
+
+        def call_agent(pack_a_local: dict, pack_b_local: dict, tier: int) -> dict:
+            try:
+                decision = agent.resolve_pair(pack_a_local, pack_b_local)
+            except Exception as exc:
+                print(
+                    f"  resolve_pair tier {tier} failed for ({entity_a['id']}, {entity_b['id']}): {exc}",
+                    file=sys.stderr,
+                )
+                return {"same_entity": False, "confidence": 0.0, "reason": str(exc), "tier": tier}
+            decision["tier"] = tier
+            return decision
+
+        decision = call_agent(pack_a, pack_b, tier=0)
+        if decision.get("confidence", 0.0) >= confidence_threshold:
+            return decision
+
+        # Tier 1 — re-resolve with the entire source document attached.
+        doc_a = documents_by_id.get(entity_a.get("source_doc", ""), {}).get("content", "")
+        doc_b = documents_by_id.get(entity_b.get("source_doc", ""), {}).get("content", "")
+        if doc_a or doc_b:
+            expanded_a = {**pack_a, "full_document_text": doc_a}
+            expanded_b = {**pack_b, "full_document_text": doc_b}
+            decision = call_agent(expanded_a, expanded_b, tier=1)
+            if decision.get("confidence", 0.0) >= confidence_threshold:
+                return decision
+            pack_a, pack_b = expanded_a, expanded_b
+
+        # Tier 2 — last resort: Wikipedia summaries for each name.
+        wiki_a = get_wiki(entity_a.get("name", ""))
+        wiki_b = get_wiki(entity_b.get("name", ""))
+        if wiki_a or wiki_b:
+            wiki_pack_a = {**pack_a, "wikipedia_summary": wiki_a or ""}
+            wiki_pack_b = {**pack_b, "wikipedia_summary": wiki_b or ""}
+            decision = call_agent(wiki_pack_a, wiki_pack_b, tier=2)
+
+        return decision
+
+    def _review_post_merge_relations(
+        self,
+        entities: list[Entity],
+        relations: list[Relation],
+        agent,
+    ) -> tuple[list[Entity], list[Relation]]:
+        """
+        After fusion, group relations by (subject, predicate, object) and ask
+        the agent to drop redundant duplicates whose evidence overlaps. This
+        catches cases where regex extracted equivalent facts about the same
+        person from two different biographies.
+        """
+        import sys
+        from collections import defaultdict
+
+        if not relations:
+            return entities, relations
+
+        entity_name_by_id = {e.id: e.name for e in entities}
+        buckets: dict[tuple[str, str, str], list[Relation]] = defaultdict(list)
+        for relation in relations:
+            buckets[(relation.subject, relation.predicate, relation.object)].append(relation)
+
+        drop_ids: set[str] = set()
+        for (subject_id, predicate, object_id), bucket in buckets.items():
+            if len(bucket) < 2:
+                continue
+            relation_dicts = [asdict(r) for r in bucket]
+            try:
+                decisions = agent.review_merged_relations(
+                    entity_name_by_id.get(subject_id, subject_id),
+                    predicate,
+                    entity_name_by_id.get(object_id, object_id),
+                    relation_dicts,
+                )
+            except Exception as exc:
+                print(f"  review_merged_relations failed: {exc}", file=sys.stderr)
+                continue
+            for relation_id, action in decisions.items():
+                if action == "drop":
+                    drop_ids.add(relation_id)
+
+        if not drop_ids:
+            return entities, relations
+
+        kept = [r for r in relations if r.id not in drop_ids]
+        print(
+            f"  post-merge review dropped {len(drop_ids)} redundant relation(s)",
+            file=sys.stderr,
+        )
+        return entities, kept
 
     def _apply_fusion_merges(
         self,
@@ -887,12 +1063,23 @@ class ExtractionPipeline:
                 if self._canonical_text(alias) != self._canonical_text(entity.name)
             )
 
+        type_by_id = {entity.id: entity.type for entity in normalized_entities}
+
         relation_keys: set[tuple[str, str, str, str, int, int]] = set()
         normalized_relations: list[Relation] = []
+        dropped_invalid = 0
         for relation in relations:
             subject = raw_to_normalized.get(relation.subject)
             object_id = raw_to_normalized.get(relation.object)
             if not subject or not object_id:
+                continue
+
+            subject_type = type_by_id.get(subject, "")
+            object_type = type_by_id.get(object_id, "")
+            if not _is_relation_type_pair_valid(
+                relation.predicate, subject_type, object_type
+            ):
+                dropped_invalid += 1
                 continue
 
             key = (
@@ -921,6 +1108,15 @@ class ExtractionPipeline:
                 )
             )
 
+        if dropped_invalid:
+            import sys
+
+            print(
+                f"WARNING: dropped {dropped_invalid} relation(s) with invalid "
+                "type-pair against the ontology (likely LLM-typed an entity wrong).",
+                file=sys.stderr,
+            )
+
         normalized_entities.sort(key=lambda item: (self._entity_type_rank(item.type), item.name.casefold(), item.id))
         normalized_relations.sort(
             key=lambda item: (item.subject, item.predicate, item.object, item.source_doc, item.char_start)
@@ -937,8 +1133,12 @@ class ExtractionPipeline:
         source_doc: str,
         content: str,
         confidence: float,
+        char_start: int | None = None,
+        char_end: int | None = None,
     ) -> Relation:
-        mention = self._find_mention(source_doc, content, evidence)
+        if char_start is None or char_end is None:
+            mention = self._find_mention(source_doc, content, evidence)
+            char_start, char_end = mention.char_start, mention.char_end
         return Relation(
             id=relation_id,
             subject=subject,
@@ -946,8 +1146,8 @@ class ExtractionPipeline:
             object=object_id,
             evidence=evidence,
             source_doc=source_doc,
-            char_start=mention.char_start,
-            char_end=mention.char_end,
+            char_start=char_start,
+            char_end=char_end,
             confidence=confidence,
         )
 

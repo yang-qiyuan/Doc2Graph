@@ -25,16 +25,19 @@ func NewService(memStore *store.MemoryStore, neo4jStore *store.Neo4jStore, runne
 	}
 }
 
-func (s *Service) CreateAndProcess(ctx context.Context, documents []domain.Document) (domain.Job, error) {
+func (s *Service) CreateAndProcess(ctx context.Context, documents []domain.Document, mode string) (domain.Job, error) {
 	job := s.memStore.CreateJob(documents)
 	s.memStore.UpdateJobStatus(job.ID, domain.JobStatusProcessing, "")
 
-	// Create a timeout context for the extractor to account for LLM API calls
-	// 5 minutes should be sufficient for the agentic loop validation
-	extractorCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	// Create a timeout context for the extractor. `validated` mode does N
+	// per-doc validation calls + per-pair resolution + optional Wikipedia
+	// fetches; on a 30-doc fixture that easily exceeded the old 5-minute
+	// budget when calls were sequential. With LLM parallelism this is
+	// generous; without it, it's at least no longer the first thing to fail.
+	extractorCtx, cancel := context.WithTimeout(ctx, 30*time.Minute)
 	defer cancel()
 
-	result, err := s.runner.Run(extractorCtx, documents)
+	result, err := s.runner.Run(extractorCtx, documents, mode)
 	if err != nil {
 		s.memStore.UpdateJobStatus(job.ID, domain.JobStatusFailed, err.Error())
 		return domain.Job{}, fmt.Errorf("process job %s: %w", job.ID, err)

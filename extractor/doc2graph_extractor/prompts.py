@@ -2,87 +2,38 @@
 Prompt templates for Claude-based entity extraction validation.
 """
 
-VALIDATION_SYSTEM_PROMPT = """You are an expert knowledge graph extraction validator. Your task is to review entity and relation extractions from biographical documents and ensure they are correct, properly formatted, and concise.
+VALIDATION_SYSTEM_PROMPT = """You are an expert knowledge-graph editor working over biographical documents.
 
-You will be shown:
-1. The source document text
-2. Entities extracted by a regex-based system
-3. Relations extracted by a regex-based system
-4. The ontology schema defining valid entity types and relation predicates
+You will receive:
+1. The full document text (canonical source of truth).
+2. A list of *candidate* entities and relations produced by a regex extractor. Treat them as a high-recall but noisy starting point — they may be incomplete, duplicated, or wrong.
 
-Your job is to:
-- Verify each entity is correctly typed according to the ontology
-- Verify each relation uses a valid predicate for the subject-object type pair
-- Check that evidence text accurately supports the claimed relation
-- Remove or correct any incorrectly extracted entities/relations
-- Make entity names and evidence text more concise where appropriate
-- Ensure proper formatting (no extra whitespace, consistent casing)
+Your job is to produce the final, document-level extraction by combining three actions:
 
-CRITICAL - Entity Fusion and Disambiguation Rules:
-1. **Entity Deduplication**: If multiple entities refer to the same real-world entity, merge them into one entity:
-   - Keep the most formal/complete name as the primary name
-   - Add other names as aliases
-   - Mark duplicate entities with action="merge_into" and specify the target entity ID
+- **ADD** entities and relations the regex missed but that are clearly supported by the text.
+- **REMOVE** candidates whose evidence doesn't actually support the claim, or that are duplicates of another candidate within this document.
+- **FIX** candidate names, aliases, and evidence spans (normalize "Curie, Marie" → "Marie Curie"; merge within-document aliases under one canonical name).
 
-2. **Entity Alignment**: Identify entities that are the same person/place/organization despite different names:
-   - Same person with different name formats (e.g., "Marie Curie" vs "Marie Skłodowska-Curie")
-   - Same person with maiden/married names
-   - Same organization with full name vs abbreviation (e.g., "University of Paris" vs "Sorbonne")
-   - Same place with different names (e.g., "Warsaw" vs "Warszawa")
+You do NOT need to enforce the ontology schema: a downstream system already validates entity types and subject-object/predicate pairings. Focus your effort on the things only an LLM can do well — recall, evidence faithfulness, and name normalization.
 
-3. **Relation Deduplication**: Only one relation is allowed between two entities:
-   - If multiple relations of the same type exist between two entities, keep the one with better evidence
-   - Mark duplicate relations with action="remove" and reason="duplicate"
+You also do NOT need to perform cross-document entity resolution here. A separate stage handles merging "Maria Skłodowska" with "Marie Curie" across documents. Within a single document, however, do collapse obvious within-doc aliases (e.g., "Einstein" and "Albert Einstein" referring to the same person) using `action="merge_into"`.
 
-4. **Name Selection Priority**:
-   - For persons: Use the most commonly known formal name
-   - For places: Use the English name when available
-   - For organizations: Use the full official name
-   - For works: Use the original title
+Submit your answer by calling the `submit_validation` tool. The tool input has four arrays:
 
-IMPORTANT: Only validate and refine existing extractions. Do not add new entities or relations that were not extracted by the regex system.
+- `entities`: one entry per *candidate* entity, each with an `action` of `keep`, `remove`, or `merge_into`. Optionally override `name`, `type`, or `aliases` to fix the candidate.
+- `relations`: one entry per *candidate* relation, each with an `action` of `keep` or `remove`. Optionally override `evidence`, `confidence`, or `predicate`.
+- `new_entities`: entities the regex missed. For each, give `name`, `type`, optional `aliases`, and the `char_start`/`char_end` of a representative mention in the document.
+- `new_relations`: relations the regex missed. Refer to subjects and objects by NAME (not ID), include `subject_type` and `object_type`, plus `predicate`, `evidence`, `char_start`, `char_end`, and `confidence`. New relations may reference newly-added entities.
 
-The ontology defines these entity types:
-- Person: Individual people
-- Organization: Companies, universities, institutions
-- Place: Cities, countries, geographic locations
-- Work: Publications, books, articles, creative works
-- Time: Dates and temporal information
-
-The ontology defines these relation predicates:
+Allowed entity types: Person, Organization, Place, Work, Time.
+Allowed relation predicates (informational only — the downstream validator is authoritative):
 - PERSON-PERSON: influenced_by, collaborated_with, family_of, student_of
 - PERSON-ORG: worked_at, studied_at, founded, member_of
 - PERSON-PLACE: born_in, died_in, lived_in
 - PERSON-WORK: authored, translated, edited
 - PERSON-TIME: born_on, died_on
 
-Respond with a JSON object containing:
-{
-  "entities": [
-    {
-      "id": "original_id",
-      "name": "Refined Name",
-      "type": "ValidType",
-      "aliases": ["Alternative Name 1", "Alternative Name 2"],
-      "action": "keep" or "remove" or "merge_into",
-      "merge_target_id": "target_entity_id (only if action=merge_into)",
-      "reason": "explanation if removed, merged, or significantly changed"
-    }
-  ],
-  "relations": [
-    {
-      "id": "original_id",
-      "subject": "entity_id",
-      "predicate": "valid_predicate",
-      "object": "entity_id",
-      "evidence": "concise evidence text",
-      "confidence": 0.0-1.0,
-      "action": "keep" or "remove",
-      "reason": "explanation if removed or changed"
-    }
-  ]
-}
-"""
+Be precise with character offsets — they must point to the literal substring in the document content for evidence highlighting to work."""
 
 def build_validation_prompt(document: dict, entities: list[dict], relations: list[dict]) -> str:
     """
@@ -108,7 +59,7 @@ def build_validation_prompt(document: dict, entities: list[dict], relations: lis
         for r in relations
     ])
 
-    prompt = f"""# Document to Validate
+    prompt = f"""# Document (canonical source of truth)
 
 **Title:** {document['title']}
 **ID:** {document['id']}
@@ -118,30 +69,28 @@ def build_validation_prompt(document: dict, entities: list[dict], relations: lis
 
 ---
 
-# Extracted Entities ({len(entities)} total)
+# Candidate entities ({len(entities)} from regex)
 
-{entities_text if entities else "(No entities extracted)"}
-
----
-
-# Extracted Relations ({len(relations)} total)
-
-{relations_text if relations else "(No relations extracted)"}
+{entities_text if entities else "(No entity candidates)"}
 
 ---
 
-# Your Task
+# Candidate relations ({len(relations)} from regex)
 
-Please validate these extractions and return a JSON response with refined entities and relations. For each entity and relation, specify whether to "keep" or "remove" it, and provide a reason if you make significant changes.
+{relations_text if relations else "(No relation candidates)"}
 
-Focus on:
-1. Type correctness (does the entity match its assigned type?)
-2. Predicate validity (is the predicate appropriate for the entity types?)
-3. Evidence accuracy (does the evidence text support the claimed relation?)
-4. Conciseness (can names or evidence be shortened without losing meaning?)
-5. Formatting (remove extra whitespace, fix casing issues)
+---
 
-Remember: Only validate and refine the provided extractions. Do not add new entities or relations."""
+# Your task
+
+Produce the final extraction for this document by calling `submit_validation` with four arrays:
+
+1. `entities` — for every candidate above, mark `keep` / `remove` / `merge_into`. Fix names, types, or aliases inline where useful.
+2. `relations` — for every candidate above, mark `keep` / `remove`. Tighten evidence text or correct confidences if needed.
+3. `new_entities` — entities the regex MISSED but the document clearly states (paraphrased birthplaces, additional collaborators, work titles without quotes, etc). Provide `name`, `type`, and exact `char_start`/`char_end` of a representative mention.
+4. `new_relations` — relations the regex MISSED. Refer to subjects/objects by NAME and include `subject_type` and `object_type`. New relations may reference entities you just added.
+
+The document is canonical. The regex candidates are a high-recall but noisy starting point — your highest-leverage work is adding what was missed and rejecting evidence that doesn't actually support the claim."""
 
     return prompt
 
@@ -256,100 +205,108 @@ Return a JSON response with complete entity and relation extractions."""
     return prompt
 
 
-CROSS_DOCUMENT_FUSION_SYSTEM_PROMPT = """You are an expert at identifying duplicate entities across multiple documents and merging them intelligently.
+PAIRWISE_RESOLUTION_SYSTEM_PROMPT = """You decide whether two entities, drawn from different biographical documents, refer to the same real-world thing.
 
-You will be given a list of entities extracted from multiple biographical documents. Your task is to identify entities that refer to the same real-world entity and mark them for merging.
+You will be given two evidence packs, each containing:
+- canonical name and aliases
+- the document the entity was extracted from
+- dated facts (born_on / died_on)
+- places (born_in / died_in / lived_in)
+- affiliations (worked_at / studied_at / founded / member_of)
+- family / mentor relations
+- short text windows around each mention
 
-**Strong Matching Signals** (if ANY of these match, entities are likely the same):
-1. **Exact birth and death dates** - If two Person entities have the exact same birth/death dates, they are almost certainly the same person
-2. **Shared spouse** - If two Person entities are married to the same person, they are likely the same
-3. **Same organization affiliations + similar time period** - Same university, same workplace at similar times
-4. **Multiple overlapping facts** - Same achievements, same locations, same collaborators
+Submit your decision via `submit_resolution`. Set `same_entity=true` only when the evidence packs are jointly consistent — e.g., overlapping dated facts, shared family members, or otherwise corroborating biographical detail. Name similarity alone is weak evidence; "John Smith" in two contexts is usually two different people unless the evidence agrees.
 
-**Name Variations to Consider**:
-- Maiden names vs married names (e.g., "Maria Skłodowska" → "Marie Curie")
-- Different transliterations (e.g., "Warszawa" → "Warsaw")
-- Abbreviations vs full names (e.g., "MIT" → "Massachusetts Institute of Technology")
-- Different language versions (e.g., "Sorbonne" → "University of Paris")
+Calibrate confidence:
+- 0.85+ when at least one strong signal (matching exact dates, matching spouse) is present and nothing contradicts it
+- 0.5–0.85 when names align and there's at least one corroborating signal
+- below 0.5 when only weak name similarity is available
 
-**Critical Example - Marie Curie**:
-- "Marie Curie" (married name, French) and "Maria Skłodowska" (maiden name, Polish) are THE SAME PERSON
-- Both born November 7, 1867 in Warsaw, died July 4, 1934
-- Both married Pierre Curie in 1895
-- Both won Nobel Prize in Physics 1903 and Chemistry 1911
-- **ACTION**: Merge "Maria Skłodowska" into "Marie Curie", add "Maria Skłodowska" as alias
-
-Respond with JSON listing entities to merge:
-{
-  "merges": [
-    {
-      "source_entity_id": "entity_to_merge",
-      "target_entity_id": "entity_to_keep",
-      "confidence": 0.0-1.0,
-      "reason": "explanation of why these are the same entity",
-      "merged_name": "Canonical name to use",
-      "aliases": ["Alternative names to add as aliases"]
-    }
-  ]
-}
-"""
+Be willing to say `same_entity=false` with high confidence when dates conflict or biographies clearly diverge."""
 
 
-def build_cross_document_fusion_prompt(all_entities: list[dict]) -> str:
-    """
-    Build prompt for cross-document entity fusion.
+def build_pairwise_resolution_prompt(pack_a: dict, pack_b: dict) -> str:
+    """Render two evidence packs side by side for the pairwise resolver."""
 
-    Args:
-        all_entities: All entities from all documents
+    def _render(pack: dict) -> str:
+        lines = [
+            f"- id: {pack.get('id')}",
+            f"  name: {pack.get('name')}",
+            f"  type: {pack.get('type')}",
+            f"  source_doc: {pack.get('source_doc')}",
+        ]
+        aliases = pack.get("aliases") or []
+        if aliases:
+            lines.append(f"  aliases: {aliases}")
+        for label, key in (
+            ("dated_facts", "dated_facts"),
+            ("places", "places"),
+            ("affiliations", "affiliations"),
+            ("family", "family"),
+            ("works", "works"),
+        ):
+            value = pack.get(key) or {}
+            if value:
+                lines.append(f"  {label}: {value}")
+        contexts = pack.get("mention_contexts") or []
+        if contexts:
+            lines.append("  mention_contexts:")
+            for context in contexts:
+                lines.append(f"    - {context!r}")
+        full_doc = pack.get("full_document_text")
+        if full_doc:
+            lines.append("  full_document_text: |")
+            for line in full_doc.splitlines():
+                lines.append(f"    {line}")
+        wiki = pack.get("wikipedia_summary")
+        if wiki:
+            lines.append("  wikipedia_summary: |")
+            for line in wiki.splitlines():
+                lines.append(f"    {line}")
+        return "\n".join(lines)
 
-    Returns:
-        Formatted prompt string
-    """
-    # Group entities by type for easier comparison
-    entities_by_type = {}
-    for entity in all_entities:
-        entity_type = entity.get('type', 'Unknown')
-        if entity_type not in entities_by_type:
-            entities_by_type[entity_type] = []
-        entities_by_type[entity_type].append(entity)
+    return f"""# Pairwise Entity Resolution
 
-    # Format entities for display
-    entities_text = []
-    for entity_type, entities in sorted(entities_by_type.items()):
-        entities_text.append(f"\n## {entity_type} Entities ({len(entities)} total)")
-        for entity in entities:
-            aliases_str = f", aliases: {entity.get('aliases', [])}" if entity.get('aliases') else ""
-            source_doc = entity.get('source_doc', 'unknown')
-            entities_text.append(f"- ID: {entity['id']}")
-            entities_text.append(f"  Name: {entity['name']}{aliases_str}")
-            entities_text.append(f"  Source: {source_doc}")
+## Entity A
+{_render(pack_a)}
 
-    prompt = f"""# Cross-Document Entity Fusion Task
-
-You have been given {len(all_entities)} entities extracted from multiple biographical documents. Your task is to identify entities that refer to the same real-world entity despite having different names or being from different documents.
-
-{"".join(entities_text)}
+## Entity B
+{_render(pack_b)}
 
 ---
 
-# Your Task
+# Decide
 
-Identify entities that should be merged because they refer to the same real-world entity. Pay special attention to:
+Are A and B the same real-world entity? Call `submit_resolution`. Justify your `confidence` score by referring to specific evidence-pack fields above (e.g., "matching born_on", "different died_in")."""
 
-1. **Person entities with different names** - Look for maiden vs married names, different spellings, or different language versions
-2. **Same birth/death dates** - This is a very strong signal for Person entities
-3. **Shared relationships** - Entities connected to the same spouse, colleagues, or organizations
-4. **Place entities with different names** - Different spellings or language versions of the same location
-5. **Organization entities** - Abbreviations vs full names, alternative names
 
-For each set of duplicate entities:
-- Choose the most formal/complete name as the target
-- Mark others to merge into it
-- List all name variations as aliases
+RELATION_REVIEW_SYSTEM_PROMPT = """A cross-document fusion stage just merged several entities into one cluster. Multiple regex-extracted relations now share the same (subject, predicate, object) shape — some are genuinely distinct facts, others are duplicates whose evidence merely paraphrases the same event.
 
-Return a JSON response with the merges list."""
+For each relation in the bucket, decide `keep` or `drop`. Default to `keep` unless the evidence text overlaps semantically with another relation already in the bucket. Submit decisions via `submit_relation_review`."""
 
-    return prompt
+
+def build_relation_review_prompt(
+    subject_name: str,
+    predicate: str,
+    object_name: str,
+    relations: list[dict],
+) -> str:
+    rendered = "\n".join(
+        f"- id: {r['id']}\n  evidence: {r.get('evidence', '')!r}\n  source_doc: {r.get('source_doc', '')}\n  confidence: {r.get('confidence', '')}"
+        for r in relations
+    )
+    return f"""# Post-merge relation bucket
+
+After fusion, {len(relations)} relations all share the same shape:
+- subject: {subject_name}
+- predicate: {predicate}
+- object: {object_name}
+
+## Relations
+{rendered}
+
+Decide which to keep and which to drop. Drop a relation only if its evidence is essentially the same fact as another relation in this bucket (different paraphrasing, same underlying claim)."""
 
 
 def build_extraction_prompt_for_document_upload(document: dict) -> str:
