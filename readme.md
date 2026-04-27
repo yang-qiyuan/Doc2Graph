@@ -241,13 +241,21 @@ EXTRACTION_MODE=validated  # Recommended
 ANTHROPIC_MODEL=claude-3-5-sonnet-20241022
 ```
 
+## Recent Enhancements
+
+### Parallel Document Processing (NEW)
+- **Multiprocessing support** for extracting from multiple documents simultaneously
+- **Configurable worker count** via `USE_PARALLEL_EXTRACTION` and `EXTRACTION_WORKERS` env vars
+- **Recommended**: 4 workers for optimal extraction performance
+- **12% extraction speedup** (isolated pipeline test with 30 documents)
+- **Note**: End-to-end API performance bottleneck is Neo4j cloud writes, not extraction
+- See `extractor/PARALLEL_PROCESSING.md` for benchmarks and configuration
+
 ## Future Enhancements
 - Community detection and graph clustering
-- Multi-sentence relationship extractios
+- Multi-sentence relationship extraction
 - Horizontal scaling support
 - Random file upload and agent-aided relation extraction
-- Add confidence feature
-- Parallel feature extraction
 - More error handling
 ## License
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import asdict
+import multiprocessing
 import os
 import re
 
@@ -67,6 +68,21 @@ _MET_PERSON_RE = re.compile(
 )
 
 
+# Module-level worker functions for multiprocessing
+def _worker_extract_document(document: dict) -> tuple[list[dict], list[dict]]:
+    """
+    Worker function for parallel document extraction.
+    Returns tuple of (entity_dicts, relation_dicts).
+    """
+    pipeline = ExtractionPipeline()
+    entities = pipeline._extract_entities(document)
+    relations = pipeline._extract_relations(document)
+    # Convert to dicts for serialization
+    entity_dicts = [asdict(e) for e in entities]
+    relation_dicts = [asdict(r) for r in relations]
+    return entity_dicts, relation_dicts
+
+
 class ExtractionPipeline:
     """Entity and relation extraction with multiple modes: regex, validated, or llm."""
 
@@ -112,9 +128,49 @@ class ExtractionPipeline:
                 raw_relations.extend(relations)
         else:
             # Regex extraction (used for both "regex" and "validated" modes)
-            for document in documents:
-                raw_entities.extend(self._extract_entities(document))
-                raw_relations.extend(self._extract_relations(document))
+            # Check if parallel processing is enabled
+            use_parallel = os.getenv("USE_PARALLEL_EXTRACTION", "false").lower() == "true"
+            num_workers = int(os.getenv("EXTRACTION_WORKERS", str(multiprocessing.cpu_count())))
+
+            if use_parallel and len(documents) > 1:
+                # Parallel extraction using multiprocessing.Pool
+                with multiprocessing.Pool(processes=num_workers) as pool:
+                    results = pool.map(_worker_extract_document, documents)
+
+                # Combine results from all workers
+                for entity_dicts, relation_dicts in results:
+                    # Convert dicts back to Entity/Relation objects
+                    for entity_dict in entity_dicts:
+                        mentions = [Mention(**m) for m in entity_dict.get("mentions", [])]
+                        raw_entities.append(
+                            Entity(
+                                id=entity_dict["id"],
+                                name=entity_dict["name"],
+                                type=entity_dict["type"],
+                                source_doc=entity_dict["source_doc"],
+                                mentions=mentions,
+                                aliases=entity_dict.get("aliases", []),
+                            )
+                        )
+                    for relation_dict in relation_dicts:
+                        raw_relations.append(
+                            Relation(
+                                id=relation_dict["id"],
+                                subject=relation_dict["subject"],
+                                predicate=relation_dict["predicate"],
+                                object=relation_dict["object"],
+                                evidence=relation_dict["evidence"],
+                                source_doc=relation_dict["source_doc"],
+                                char_start=relation_dict["char_start"],
+                                char_end=relation_dict["char_end"],
+                                confidence=relation_dict["confidence"],
+                            )
+                        )
+            else:
+                # Sequential extraction (original behavior)
+                for document in documents:
+                    raw_entities.extend(self._extract_entities(document))
+                    raw_relations.extend(self._extract_relations(document))
 
             # Validation stage - optional Claude-based refinement for "validated" mode
             if extraction_mode == "validated":

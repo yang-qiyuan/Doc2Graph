@@ -9,6 +9,7 @@ from typing import Any
 
 import httpx
 from anthropic import Anthropic
+from duckduckgo_search import DDGS
 from pydantic import BaseModel, Field
 from tenacity import retry, stop_after_attempt, wait_exponential
 
@@ -347,17 +348,170 @@ class ValidationAgent:
 
         return refined_entities, refined_relations
 
+    def _web_search_entity(self, entity_name: str, entity_type: str, max_results: int = 3) -> str:
+        """
+        Perform web search to gather information about an entity.
+
+        Args:
+            entity_name: Name of the entity to search for
+            entity_type: Type of entity (Person, Organization, etc.)
+            max_results: Maximum number of search results to retrieve
+
+        Returns:
+            Formatted string with search results summary
+        """
+        try:
+            import sys
+            print(f"Web searching for: {entity_name} ({entity_type})", file=sys.stderr)
+
+            # Construct search query
+            query = f"{entity_name} {entity_type.lower()}"
+
+            # Perform search
+            with DDGS() as ddgs:
+                results = list(ddgs.text(query, max_results=max_results))
+
+            if not results:
+                return f"No web search results found for {entity_name}"
+
+            # Format results
+            summary = f"Web search results for '{entity_name}':\n\n"
+            for idx, result in enumerate(results, 1):
+                title = result.get('title', 'N/A')
+                snippet = result.get('body', 'N/A')
+                summary += f"{idx}. {title}\n{snippet}\n\n"
+
+            print(f"Found {len(results)} search results for {entity_name}", file=sys.stderr)
+            return summary.strip()
+
+        except Exception as e:
+            import sys
+            print(f"WARNING: Web search failed for {entity_name}: {e}", file=sys.stderr)
+            return f"Web search unavailable for {entity_name}"
+
+    def _disambiguate_with_web_search(
+        self,
+        entity1: dict,
+        entity2: dict,
+    ) -> dict[str, Any]:
+        """
+        Use web search to help determine if two entities are the same.
+
+        Args:
+            entity1: First entity dict
+            entity2: Second entity dict
+
+        Returns:
+            Dict with keys:
+                - should_merge: bool
+                - confidence: float
+                - reason: str
+                - aliases: list[str]
+        """
+        import sys
+
+        entity1_name = entity1.get('name', 'Unknown')
+        entity2_name = entity2.get('name', 'Unknown')
+        entity1_type = entity1.get('type', 'Unknown')
+        entity2_type = entity2.get('type', 'Unknown')
+
+        print(f"\nDisambiguating with web search: '{entity1_name}' vs '{entity2_name}'", file=sys.stderr)
+
+        # Only disambiguate if types match
+        if entity1_type != entity2_type:
+            return {
+                'should_merge': False,
+                'confidence': 1.0,
+                'reason': 'Different entity types',
+                'aliases': []
+            }
+
+        # Perform web search for both entities
+        search1 = self._web_search_entity(entity1_name, entity1_type)
+        search2 = self._web_search_entity(entity2_name, entity2_type)
+
+        # Build prompt for Claude to analyze web search results
+        disambiguation_prompt = f"""I need to determine if these two entities refer to the same real-world entity:
+
+Entity 1:
+- Name: {entity1_name}
+- Type: {entity1_type}
+- Mentions: {len(entity1.get('mentions', []))}
+
+Entity 2:
+- Name: {entity2_name}
+- Type: {entity2_type}
+- Mentions: {len(entity2.get('mentions', []))}
+
+Web search results for Entity 1:
+{search1}
+
+Web search results for Entity 2:
+{search2}
+
+Based on the web search results, determine if these entities refer to the same real-world entity.
+
+Respond ONLY with valid JSON in this format:
+{{
+    "should_merge": true or false,
+    "confidence": 0.0 to 1.0,
+    "reason": "brief explanation",
+    "aliases": ["list", "of", "alternative", "names"]
+}}"""
+
+        try:
+            # Call Claude for disambiguation
+            response = self.client.messages.create(
+                model=self.model,
+                max_tokens=1024,
+                temperature=0.0,
+                system="You are an entity disambiguation expert. Analyze web search results to determine if two entities are the same.",
+                messages=[{"role": "user", "content": disambiguation_prompt}],
+            )
+
+            response_text = response.content[0].text.strip()
+
+            # Parse JSON response
+            if response_text.startswith("```json"):
+                response_text = response_text[7:]
+            if response_text.startswith("```"):
+                response_text = response_text[3:]
+            if response_text.endswith("```"):
+                response_text = response_text[:-3]
+            response_text = response_text.strip()
+
+            result = json.loads(response_text)
+
+            print(f"Disambiguation result: should_merge={result['should_merge']}, confidence={result['confidence']:.2f}", file=sys.stderr)
+            print(f"Reason: {result['reason']}", file=sys.stderr)
+
+            return result
+
+        except Exception as e:
+            print(f"WARNING: Disambiguation failed: {e}", file=sys.stderr)
+            return {
+                'should_merge': False,
+                'confidence': 0.0,
+                'reason': f'Disambiguation error: {e}',
+                'aliases': []
+            }
+
     def cross_document_fusion(
         self,
         all_entities: list[dict],
+        use_web_search: bool = True,
+        web_search_threshold: float = 0.5,
     ) -> list[tuple[str, str, list[str]]]:
         """
-        Perform cross-document entity fusion using Claude.
+        Perform cross-document entity fusion using Claude, with optional web search for disambiguation.
 
         Identifies entities from different documents that refer to the same real-world entity.
+        When confidence is low or information is insufficient, uses web search to help disambiguate.
 
         Args:
             all_entities: All entities from all documents
+            use_web_search: Whether to use web search for disambiguation (default: True)
+            web_search_threshold: Confidence threshold below which web search is used (default: 0.5)
 
         Returns:
             List of (source_id, target_id, aliases) tuples for entities to merge
@@ -365,6 +519,8 @@ class ValidationAgent:
         Raises:
             Exception if fusion fails
         """
+        import sys
+
         if len(all_entities) < 2:
             # Need at least 2 entities to perform fusion
             return []
@@ -396,23 +552,71 @@ class ValidationAgent:
         try:
             data = json.loads(response_text)
         except json.JSONDecodeError as e:
-            import sys
             print(f"WARNING: Failed to parse cross-document fusion response: {e}", file=sys.stderr)
             print(f"Response text: {response_text[:500]}", file=sys.stderr)
             return []
 
-        # Extract merge instructions
+        # Extract merge instructions and check for uncertain matches
         merges = []
+        uncertain_pairs = []  # Pairs that need web search disambiguation
+
         for merge in data.get("merges", []):
             source_id = merge.get("source_entity_id")
             target_id = merge.get("target_entity_id")
+            confidence = merge.get("confidence", 0.0)
             aliases = merge.get("aliases", [])
+            reason = merge.get("reason", "N/A")
 
-            if source_id and target_id:
+            if not source_id or not target_id:
+                continue
+
+            # Check if confidence is below threshold for web search
+            if use_web_search and confidence < web_search_threshold:
+                print(f"\nLow confidence fusion ({confidence:.2f}): {source_id} → {target_id}", file=sys.stderr)
+                print(f"  Reason: {reason}", file=sys.stderr)
+                print(f"  Will use web search for disambiguation", file=sys.stderr)
+                uncertain_pairs.append({
+                    'source_id': source_id,
+                    'target_id': target_id,
+                    'initial_confidence': confidence,
+                    'initial_aliases': aliases,
+                    'initial_reason': reason
+                })
+            else:
+                # High confidence - accept the merge
                 merges.append((source_id, target_id, aliases))
-                import sys
-                print(f"Cross-document fusion: {source_id} → {target_id} (confidence: {merge.get('confidence', 0.0):.2f})", file=sys.stderr)
-                print(f"  Reason: {merge.get('reason', 'N/A')}", file=sys.stderr)
+                print(f"Cross-document fusion: {source_id} → {target_id} (confidence: {confidence:.2f})", file=sys.stderr)
+                print(f"  Reason: {reason}", file=sys.stderr)
+
+        # Perform web search disambiguation for uncertain pairs
+        if use_web_search and uncertain_pairs:
+            print(f"\nPerforming web search disambiguation for {len(uncertain_pairs)} uncertain pair(s)...", file=sys.stderr)
+
+            # Create entity lookup
+            entity_by_id = {e['id']: e for e in all_entities}
+
+            for pair in uncertain_pairs:
+                source_entity = entity_by_id.get(pair['source_id'])
+                target_entity = entity_by_id.get(pair['target_id'])
+
+                if not source_entity or not target_entity:
+                    continue
+
+                # Use web search to disambiguate
+                web_result = self._disambiguate_with_web_search(source_entity, target_entity)
+
+                if web_result['should_merge'] and web_result['confidence'] >= web_search_threshold:
+                    # Web search confirmed the merge
+                    aliases = list(set(pair['initial_aliases'] + web_result.get('aliases', [])))
+                    merges.append((pair['source_id'], pair['target_id'], aliases))
+                    print(f"✓ Web search CONFIRMED fusion: {pair['source_id']} → {pair['target_id']}", file=sys.stderr)
+                    print(f"  Initial confidence: {pair['initial_confidence']:.2f}, Web search confidence: {web_result['confidence']:.2f}", file=sys.stderr)
+                    print(f"  Web search reason: {web_result['reason']}", file=sys.stderr)
+                else:
+                    # Web search did not confirm the merge
+                    print(f"✗ Web search REJECTED fusion: {pair['source_id']} → {pair['target_id']}", file=sys.stderr)
+                    print(f"  Web search confidence: {web_result['confidence']:.2f}", file=sys.stderr)
+                    print(f"  Web search reason: {web_result['reason']}", file=sys.stderr)
 
         return merges
 
