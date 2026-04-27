@@ -241,17 +241,9 @@ EXTRACTION_MODE=validated  # Recommended
 ANTHROPIC_MODEL=claude-3-5-sonnet-20241022
 ```
 
-## Validation and Quality Assurance
-
-- **Schema Validation**: All extraction results validated against `schemas/export.schema.json`
-- **Ontology Validation**: Entity types and relation predicates checked against `schemas/ontology.json`
-- **Character Offset Validation**: Ensures all mentions and evidence point to valid text spans
-- **Relation Deduplication**: Prevents duplicate relations using (subject, predicate, object) tuples
-- **Cross-Document Fusion**: LLM-powered entity disambiguation with confidence scoring
-
 ## Future Enhancements
 - Community detection and graph clustering
-- Multi-sentence relationship extraction
+- Multi-sentence relationship extractios
 - Horizontal scaling support
 - Random file upload and agent-aided relation extraction
 - Add confidence feature
