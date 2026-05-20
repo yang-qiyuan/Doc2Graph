@@ -19,7 +19,10 @@ except ImportError:
 _DATE_RANGE_RE = re.compile(r"\(([^()]+?)\s+[–-]\s+([^()]+?)\)")
 _BORN_IN_RE = re.compile(r"\bwas born in ([A-Z][A-Za-z' .,-]+?)(?:[.;]|\s+on\s|\s+to\s|\s+and\s)")
 _DIED_IN_RE = re.compile(r"\bdied in ([A-Z][A-Za-z' .,-]+?)(?:[.;]|\s+on\s|\s+at\s|\s+after\s)")
-_LIVED_IN_RE = re.compile(r"\b(?:lived|resided|settled|moved to|relocated to)\s+in\s+([A-Z][A-Za-z' .,-]+?)(?:[.;,]|\s+where\s|\s+for\s|\s+and\s)")
+_LIVED_IN_RE = re.compile(
+    r"\b(?:(?:lived|resided|settled)\s+in|(?:moved|relocated)\s+to)\s+"
+    r"([A-Z][A-Za-z' .,-]+?)(?:[.;,]|\s+where\s|\s+for\s|\s+and\s)"
+)
 _WORKED_AT_RE = re.compile(
     r"\b(?:worked|served|taught|researched)\s+(?:at|for)\s+(?:the\s+)?([A-Z][A-Za-z0-9&' .,-]+?)(?:[.;,]|\s+where\s|\s+from\s)"
 )
@@ -41,31 +44,52 @@ _TRANSLATED_RE = re.compile(
 _EDITED_RE = re.compile(
     r"\b(?:edited)\s+(?:the\s+)?[\"']([^\"']+)[\"']"
 )
+# Tight person-name shape: uppercase-led first token (no internal dot), optional
+# initial-form chain like "J.R.R", up to two more uppercase-led tokens. The cap
+# stops captures from spanning sentence boundaries ("Bohr. He collaborated...").
+_PERSON_NAME = r"[A-Z][\wÀ-ÿ-]+(?:\.[A-Z][\wÀ-ÿ-]*)*(?:\s+[A-ZÀ-ÿ][\wÀ-ÿ-]+){0,2}"
+
 _INFLUENCED_BY_RE = re.compile(
-    r"\b(?:influenced|inspired|mentored|guided)\s+by\s+([A-Z][\wÀ-ÿ.-]+(?:\s+[\wÀ-ÿ.-]+)*)(?:\s+(?:and|who|,|;|\.)|$)",
-    re.UNICODE
+    rf"\b(?:influenced|inspired|mentored|guided)\s+by\s+({_PERSON_NAME})\b",
+    re.UNICODE,
 )
 _COLLABORATED_WITH_RE = re.compile(
-    r"\b(?:collaborated|worked|partnered)\s+(?:together\s+)?with\s+([A-Z][\wÀ-ÿ.-]+(?:\s+[\wÀ-ÿ.-]+)*)(?:\s+(?:on|to|and|,|;|\.)|$)",
-    re.UNICODE
+    rf"\b(?:collaborated|worked|partnered)\s+(?:together\s+)?with\s+({_PERSON_NAME})\b",
+    re.UNICODE,
 )
 _FAMILY_OF_RE = re.compile(
-    r"\b(?:son|daughter|brother|sister|father|mother|parent|child|spouse|wife|husband)\s+of\s+([A-ZÀ-ÿ][\wÀ-ÿ.-]+(?:\s+[\wÀ-ÿ.-]+)*)(?:\s+(?:and|who|was|were|,|;|\.)|$)",
-    re.UNICODE
+    rf"\b(?:son|daughter|brother|sister|father|mother|parent|child|spouse|wife|husband)\s+of\s+({_PERSON_NAME})\b",
+    re.UNICODE,
 )
 _STUDENT_OF_RE = re.compile(
-    r"\b(?:student|pupil|apprentice|disciple)\s+of\s+([A-Z][\wÀ-ÿ.-]+(?:\s+[\wÀ-ÿ.-]+)*)(?:\s+(?:and|who|was|were|,|;|\.)|$)",
-    re.UNICODE
+    rf"\b(?:student|pupil|apprentice|disciple)\s+of\s+({_PERSON_NAME})\b",
+    re.UNICODE,
 )
-_MARRIED_TO_RE = re.compile(
-    r"\bmarried\s+([A-Z][\wÀ-ÿ.-]+(?:\s+[\wÀ-ÿ.-]+)*)(?:\s+(?:in|on|at|and|,|;)|$)",
-    re.UNICODE
-)
+_MARRIED_TO_RE = re.compile(rf"\bmarried\s+({_PERSON_NAME})\b", re.UNICODE)
 # Additional pattern for "met [Person]" relationships
-_MET_PERSON_RE = re.compile(
-    r"\bmet\s+([A-Z][\wÀ-ÿ.-]+(?:\s+[\wÀ-ÿ.-]+)*)(?:\s+(?:in|at|and|who|,|;|\.)|$)",
-    re.UNICODE
-)
+_MET_PERSON_RE = re.compile(rf"\bmet\s+({_PERSON_NAME})\b", re.UNICODE)
+
+
+# Table-driven relation extraction: (regex, predicate, object_type, confidence, cleaner_attr).
+# `_DATE_RANGE_RE` is handled separately because it produces two relations per match.
+_RELATION_PATTERNS: list[tuple[re.Pattern[str], str, str, float, str | None]] = [
+    (_BORN_IN_RE, "born_in", "Place", 0.82, "_clean_place"),
+    (_DIED_IN_RE, "died_in", "Place", 0.79, "_clean_place"),
+    (_LIVED_IN_RE, "lived_in", "Place", 0.75, "_clean_place"),
+    (_WORKED_AT_RE, "worked_at", "Organization", 0.72, "_clean_org"),
+    (_STUDIED_AT_RE, "studied_at", "Organization", 0.78, "_clean_org"),
+    (_FOUNDED_RE, "founded", "Organization", 0.85, "_clean_org"),
+    (_MEMBER_OF_RE, "member_of", "Organization", 0.76, "_clean_org"),
+    (_AUTHORED_RE, "authored", "Work", 0.83, None),
+    (_TRANSLATED_RE, "translated", "Work", 0.80, None),
+    (_EDITED_RE, "edited", "Work", 0.77, None),
+    (_INFLUENCED_BY_RE, "influenced_by", "Person", 0.70, "_clean_person"),
+    (_COLLABORATED_WITH_RE, "collaborated_with", "Person", 0.74, "_clean_person"),
+    (_FAMILY_OF_RE, "family_of", "Person", 0.81, "_clean_person"),
+    (_STUDENT_OF_RE, "student_of", "Person", 0.79, "_clean_person"),
+    (_MARRIED_TO_RE, "family_of", "Person", 0.85, "_clean_person"),
+    (_MET_PERSON_RE, "collaborated_with", "Person", 0.65, "_clean_person"),
+]
 
 
 # Module-level worker functions for multiprocessing
@@ -276,67 +300,44 @@ class ExtractionPipeline:
             )
         )
 
-        for name, entity_type in self._extract_secondary_entity_values(content):
-            mention = self._find_mention(document_id, content, name)
+        for name, entity_type, char_start, char_end in self._extract_secondary_entity_values(content):
             entities.append(
                 Entity(
                     id=f"{document_id}:{entity_type.lower()}:{self._canonical_key(entity_type, name)}",
                     name=name,
                     type=entity_type,
                     source_doc=document_id,
-                    mentions=[mention],
+                    mentions=[Mention(doc_id=document_id, char_start=char_start, char_end=char_end)],
                 )
             )
 
         return entities
 
-    def _extract_secondary_entity_values(self, content: str) -> list[tuple[str, str]]:
-        values: list[tuple[str, str]] = []
+    def _extract_secondary_entity_values(self, content: str) -> list[tuple[str, str, int, int]]:
+        """Return (name, type, char_start, char_end) for every pattern occurrence in content."""
+        values: list[tuple[str, str, int, int]] = []
 
-        # Extract Time entities
-        date_match = _DATE_RANGE_RE.search(content)
-        if date_match:
-            values.append((date_match.group(1).strip(), "Time"))
-            values.append((date_match.group(2).strip(), "Time"))
+        # Time entities: each date-range match yields two Time entities
+        for match in _DATE_RANGE_RE.finditer(content):
+            for group_idx in (1, 2):
+                raw = match.group(group_idx)
+                cleaned = raw.strip()
+                if not cleaned:
+                    continue
+                start, end = self._span_after_clean(match.start(group_idx), raw, cleaned)
+                values.append((cleaned, "Time", start, end))
 
-        # Extract Place entities
-        for pattern in (_BORN_IN_RE, _DIED_IN_RE, _LIVED_IN_RE):
-            match = pattern.search(content)
-            if match:
-                values.append((self._clean_place(match.group(1)), "Place"))
+        # All other entity types are emitted by the relation patterns
+        for pattern, _, obj_type, _, cleaner_name in _RELATION_PATTERNS:
+            for match in pattern.finditer(content):
+                raw = match.group(1)
+                cleaned = self._apply_cleaner(cleaner_name, raw)
+                if not cleaned:
+                    continue
+                start, end = self._span_after_clean(match.start(1), raw, cleaned)
+                values.append((cleaned, obj_type, start, end))
 
-        # Extract Organization entities
-        for pattern in (_WORKED_AT_RE, _STUDIED_AT_RE, _FOUNDED_RE, _MEMBER_OF_RE):
-            match = pattern.search(content)
-            if match:
-                values.append((self._clean_org(match.group(1)), "Organization"))
-
-        # Extract Work entities
-        for pattern in (_AUTHORED_RE, _TRANSLATED_RE, _EDITED_RE):
-            match = pattern.search(content)
-            if match:
-                work_title = match.group(1).strip()
-                if work_title:
-                    values.append((work_title, "Work"))
-
-        # Extract Person entities (for PERSON-PERSON relations)
-        for pattern in (_INFLUENCED_BY_RE, _COLLABORATED_WITH_RE, _FAMILY_OF_RE, _STUDENT_OF_RE, _MARRIED_TO_RE, _MET_PERSON_RE):
-            match = pattern.search(content)
-            if match:
-                person_name = self._clean_person(match.group(1))
-                if person_name:
-                    values.append((person_name, "Person"))
-
-        deduped: list[tuple[str, str]] = []
-        seen: set[tuple[str, str]] = set()
-        for name, entity_type in values:
-            key = (entity_type, self._canonical_key(entity_type, name))
-            if key in seen or not name:
-                continue
-            seen.add(key)
-            deduped.append((name, entity_type))
-
-        return deduped
+        return values
 
     def _extract_relations(self, document: dict) -> list[Relation]:
         content = document.get("content", "")
@@ -349,328 +350,55 @@ class ExtractionPipeline:
         relations: list[Relation] = []
         relation_counter = 0
 
-        # PERSON-TIME relations
+        # PERSON-TIME relations: only the FIRST parenthetical date range is
+        # attributed to the title-Person. Subsequent ranges in the document
+        # belong to other people mentioned in the prose (parents, children,
+        # collaborators) and would over-attribute their dates to the subject.
         date_match = _DATE_RANGE_RE.search(content)
         if date_match:
-            born = date_match.group(1).strip()
-            died = date_match.group(2).strip()
-            relations.append(
-                self._build_relation(
-                    relation_id=f"{document_id}:R{relation_counter}",
-                    subject=person_id,
-                    predicate="born_on",
-                    object_id=f"{document_id}:time:{self._canonical_key('Time', born)}",
-                    evidence=born,
-                    source_doc=document_id,
-                    content=content,
-                    confidence=0.88,
-                )
-            )
-            relation_counter += 1
-            relations.append(
-                self._build_relation(
-                    relation_id=f"{document_id}:R{relation_counter}",
-                    subject=person_id,
-                    predicate="died_on",
-                    object_id=f"{document_id}:time:{self._canonical_key('Time', died)}",
-                    evidence=died,
-                    source_doc=document_id,
-                    content=content,
-                    confidence=0.88,
-                )
-            )
-            relation_counter += 1
-
-        # PERSON-PLACE relations
-        born_in_match = _BORN_IN_RE.search(content)
-        if born_in_match:
-            place = self._clean_place(born_in_match.group(1))
-            relations.append(
-                self._build_relation(
-                    relation_id=f"{document_id}:R{relation_counter}",
-                    subject=person_id,
-                    predicate="born_in",
-                    object_id=f"{document_id}:place:{self._canonical_key('Place', place)}",
-                    evidence=place,
-                    source_doc=document_id,
-                    content=content,
-                    confidence=0.82,
-                )
-            )
-            relation_counter += 1
-
-        died_in_match = _DIED_IN_RE.search(content)
-        if died_in_match:
-            place = self._clean_place(died_in_match.group(1))
-            relations.append(
-                self._build_relation(
-                    relation_id=f"{document_id}:R{relation_counter}",
-                    subject=person_id,
-                    predicate="died_in",
-                    object_id=f"{document_id}:place:{self._canonical_key('Place', place)}",
-                    evidence=place,
-                    source_doc=document_id,
-                    content=content,
-                    confidence=0.79,
-                )
-            )
-            relation_counter += 1
-
-        lived_in_match = _LIVED_IN_RE.search(content)
-        if lived_in_match:
-            place = self._clean_place(lived_in_match.group(1))
-            relations.append(
-                self._build_relation(
-                    relation_id=f"{document_id}:R{relation_counter}",
-                    subject=person_id,
-                    predicate="lived_in",
-                    object_id=f"{document_id}:place:{self._canonical_key('Place', place)}",
-                    evidence=place,
-                    source_doc=document_id,
-                    content=content,
-                    confidence=0.75,
-                )
-            )
-            relation_counter += 1
-
-        # PERSON-ORG relations
-        worked_at_match = _WORKED_AT_RE.search(content)
-        if worked_at_match:
-            org = self._clean_org(worked_at_match.group(1))
-            relations.append(
-                self._build_relation(
-                    relation_id=f"{document_id}:R{relation_counter}",
-                    subject=person_id,
-                    predicate="worked_at",
-                    object_id=f"{document_id}:organization:{self._canonical_key('Organization', org)}",
-                    evidence=org,
-                    source_doc=document_id,
-                    content=content,
-                    confidence=0.72,
-                )
-            )
-            relation_counter += 1
-
-        studied_at_match = _STUDIED_AT_RE.search(content)
-        if studied_at_match:
-            org = self._clean_org(studied_at_match.group(1))
-            relations.append(
-                self._build_relation(
-                    relation_id=f"{document_id}:R{relation_counter}",
-                    subject=person_id,
-                    predicate="studied_at",
-                    object_id=f"{document_id}:organization:{self._canonical_key('Organization', org)}",
-                    evidence=org,
-                    source_doc=document_id,
-                    content=content,
-                    confidence=0.78,
-                )
-            )
-            relation_counter += 1
-
-        founded_match = _FOUNDED_RE.search(content)
-        if founded_match:
-            org = self._clean_org(founded_match.group(1))
-            relations.append(
-                self._build_relation(
-                    relation_id=f"{document_id}:R{relation_counter}",
-                    subject=person_id,
-                    predicate="founded",
-                    object_id=f"{document_id}:organization:{self._canonical_key('Organization', org)}",
-                    evidence=org,
-                    source_doc=document_id,
-                    content=content,
-                    confidence=0.85,
-                )
-            )
-            relation_counter += 1
-
-        member_of_match = _MEMBER_OF_RE.search(content)
-        if member_of_match:
-            org = self._clean_org(member_of_match.group(1))
-            relations.append(
-                self._build_relation(
-                    relation_id=f"{document_id}:R{relation_counter}",
-                    subject=person_id,
-                    predicate="member_of",
-                    object_id=f"{document_id}:organization:{self._canonical_key('Organization', org)}",
-                    evidence=org,
-                    source_doc=document_id,
-                    content=content,
-                    confidence=0.76,
-                )
-            )
-            relation_counter += 1
-
-        # PERSON-WORK relations
-        authored_match = _AUTHORED_RE.search(content)
-        if authored_match:
-            work_title = authored_match.group(1).strip()
-            relations.append(
-                self._build_relation(
-                    relation_id=f"{document_id}:R{relation_counter}",
-                    subject=person_id,
-                    predicate="authored",
-                    object_id=f"{document_id}:work:{self._canonical_key('Work', work_title)}",
-                    evidence=work_title,
-                    source_doc=document_id,
-                    content=content,
-                    confidence=0.83,
-                )
-            )
-            relation_counter += 1
-
-        translated_match = _TRANSLATED_RE.search(content)
-        if translated_match:
-            work_title = translated_match.group(1).strip()
-            relations.append(
-                self._build_relation(
-                    relation_id=f"{document_id}:R{relation_counter}",
-                    subject=person_id,
-                    predicate="translated",
-                    object_id=f"{document_id}:work:{self._canonical_key('Work', work_title)}",
-                    evidence=work_title,
-                    source_doc=document_id,
-                    content=content,
-                    confidence=0.80,
-                )
-            )
-            relation_counter += 1
-
-        edited_match = _EDITED_RE.search(content)
-        if edited_match:
-            work_title = edited_match.group(1).strip()
-            relations.append(
-                self._build_relation(
-                    relation_id=f"{document_id}:R{relation_counter}",
-                    subject=person_id,
-                    predicate="edited",
-                    object_id=f"{document_id}:work:{self._canonical_key('Work', work_title)}",
-                    evidence=work_title,
-                    source_doc=document_id,
-                    content=content,
-                    confidence=0.77,
-                )
-            )
-            relation_counter += 1
-
-        # PERSON-PERSON relations
-        influenced_by_match = _INFLUENCED_BY_RE.search(content)
-        if influenced_by_match:
-            person_name = self._clean_person(influenced_by_match.group(1))
-            object_id = f"{document_id}:person:{self._canonical_key('Person', person_name)}"
-            # Skip self-referential relations
-            if object_id != person_id:
+            for predicate, group_idx in (("born_on", 1), ("died_on", 2)):
+                raw = date_match.group(group_idx)
+                cleaned = raw.strip()
+                if not cleaned:
+                    continue
+                char_start, char_end = self._span_after_clean(date_match.start(group_idx), raw, cleaned)
                 relations.append(
-                    self._build_relation(
-                        relation_id=f"{document_id}:R{relation_counter}",
+                    Relation(
+                        id=f"{document_id}:R{relation_counter}",
                         subject=person_id,
-                        predicate="influenced_by",
-                        object_id=object_id,
-                        evidence=person_name,
+                        predicate=predicate,
+                        object=f"{document_id}:time:{self._canonical_key('Time', cleaned)}",
+                        evidence=cleaned,
                         source_doc=document_id,
-                        content=content,
-                        confidence=0.70,
+                        char_start=char_start,
+                        char_end=char_end,
+                        confidence=0.88,
                     )
                 )
                 relation_counter += 1
 
-        collaborated_with_match = _COLLABORATED_WITH_RE.search(content)
-        if collaborated_with_match:
-            person_name = self._clean_person(collaborated_with_match.group(1))
-            object_id = f"{document_id}:person:{self._canonical_key('Person', person_name)}"
-            # Skip self-referential relations
-            if object_id != person_id:
+        # All other relation types via the patterns table
+        for pattern, predicate, obj_type, confidence, cleaner_name in _RELATION_PATTERNS:
+            for match in pattern.finditer(content):
+                raw = match.group(1)
+                cleaned = self._apply_cleaner(cleaner_name, raw)
+                if not cleaned:
+                    continue
+                object_id = f"{document_id}:{obj_type.lower()}:{self._canonical_key(obj_type, cleaned)}"
+                if obj_type == "Person" and object_id == person_id:
+                    continue
+                char_start, char_end = self._span_after_clean(match.start(1), raw, cleaned)
                 relations.append(
-                    self._build_relation(
-                        relation_id=f"{document_id}:R{relation_counter}",
+                    Relation(
+                        id=f"{document_id}:R{relation_counter}",
                         subject=person_id,
-                        predicate="collaborated_with",
-                        object_id=object_id,
-                        evidence=person_name,
+                        predicate=predicate,
+                        object=object_id,
+                        evidence=cleaned,
                         source_doc=document_id,
-                        content=content,
-                        confidence=0.74,
-                    )
-                )
-                relation_counter += 1
-
-        family_of_match = _FAMILY_OF_RE.search(content)
-        if family_of_match:
-            person_name = self._clean_person(family_of_match.group(1))
-            object_id = f"{document_id}:person:{self._canonical_key('Person', person_name)}"
-            # Skip self-referential relations
-            if object_id != person_id:
-                relations.append(
-                    self._build_relation(
-                        relation_id=f"{document_id}:R{relation_counter}",
-                        subject=person_id,
-                        predicate="family_of",
-                        object_id=object_id,
-                        evidence=person_name,
-                        source_doc=document_id,
-                        content=content,
-                        confidence=0.81,
-                    )
-                )
-                relation_counter += 1
-
-        student_of_match = _STUDENT_OF_RE.search(content)
-        if student_of_match:
-            person_name = self._clean_person(student_of_match.group(1))
-            object_id = f"{document_id}:person:{self._canonical_key('Person', person_name)}"
-            # Skip self-referential relations
-            if object_id != person_id:
-                relations.append(
-                    self._build_relation(
-                        relation_id=f"{document_id}:R{relation_counter}",
-                        subject=person_id,
-                        predicate="student_of",
-                        object_id=object_id,
-                        evidence=person_name,
-                        source_doc=document_id,
-                        content=content,
-                        confidence=0.79,
-                    )
-                )
-                relation_counter += 1
-
-        married_to_match = _MARRIED_TO_RE.search(content)
-        if married_to_match:
-            person_name = self._clean_person(married_to_match.group(1))
-            object_id = f"{document_id}:person:{self._canonical_key('Person', person_name)}"
-            # Skip self-referential relations
-            if object_id != person_id:
-                relations.append(
-                    self._build_relation(
-                        relation_id=f"{document_id}:R{relation_counter}",
-                        subject=person_id,
-                        predicate="family_of",
-                        object_id=object_id,
-                        evidence=person_name,
-                        source_doc=document_id,
-                        content=content,
-                        confidence=0.85,
-                    )
-                )
-                relation_counter += 1
-
-        met_person_match = _MET_PERSON_RE.search(content)
-        if met_person_match:
-            person_name = self._clean_person(met_person_match.group(1))
-            object_id = f"{document_id}:person:{self._canonical_key('Person', person_name)}"
-            # Skip self-referential relations
-            if object_id != person_id:
-                relations.append(
-                    self._build_relation(
-                        relation_id=f"{document_id}:R{relation_counter}",
-                        subject=person_id,
-                        predicate="collaborated_with",
-                        object_id=object_id,
-                        evidence=person_name,
-                        source_doc=document_id,
-                        content=content,
-                        confidence=0.65,
+                        char_start=char_start,
+                        char_end=char_end,
+                        confidence=confidence,
                     )
                 )
                 relation_counter += 1
@@ -822,15 +550,22 @@ class ExtractionPipeline:
                 print(f"  Object: {object_key} -> {object_id}", file=sys.stderr)
                 continue
 
+            # LLMs cannot count characters reliably, so resolve char offsets
+            # by locating the evidence text in the document. Fall back to a
+            # whole-doc span only if the evidence string is not found.
+            content = document.get("content", "")
+            evidence = relation_dict.get("evidence", "")
+            char_start, char_end = self._locate_evidence_span(content, evidence)
+
             relation = Relation(
                 id=relation_id,
                 subject=subject_id,
                 predicate=relation_dict["predicate"],
                 object=object_id,
-                evidence=relation_dict.get("evidence", ""),
+                evidence=evidence,
                 source_doc=document["id"],
-                char_start=relation_dict.get("char_start", 0),
-                char_end=relation_dict.get("char_end", len(document.get("content", ""))),
+                char_start=char_start,
+                char_end=char_end,
                 confidence=relation_dict.get("confidence", 0.5),
             )
             relations.append(relation)
@@ -927,29 +662,34 @@ class ExtractionPipeline:
         )
         return normalized_entities, normalized_relations
 
-    def _build_relation(
-        self,
-        relation_id: str,
-        subject: str,
-        predicate: str,
-        object_id: str,
-        evidence: str,
-        source_doc: str,
-        content: str,
-        confidence: float,
-    ) -> Relation:
-        mention = self._find_mention(source_doc, content, evidence)
-        return Relation(
-            id=relation_id,
-            subject=subject,
-            predicate=predicate,
-            object=object_id,
-            evidence=evidence,
-            source_doc=source_doc,
-            char_start=mention.char_start,
-            char_end=mention.char_end,
-            confidence=confidence,
-        )
+    def _apply_cleaner(self, cleaner_name: str | None, value: str) -> str:
+        if cleaner_name is None:
+            return value.strip()
+        return getattr(self, cleaner_name)(value)
+
+    def _span_after_clean(self, raw_start: int, raw: str, cleaned: str) -> tuple[int, int]:
+        """Project a cleaned substring's span back into the original content."""
+        offset = raw.find(cleaned)
+        if offset < 0:
+            return raw_start, raw_start + len(raw)
+        return raw_start + offset, raw_start + offset + len(cleaned)
+
+    def _locate_evidence_span(self, content: str, evidence: str) -> tuple[int, int]:
+        """
+        Resolve char_start/char_end by finding the evidence text in the document.
+        Falls back to a whole-doc span when the evidence isn't found verbatim,
+        which keeps the relation within source bounds for backend validation.
+        """
+        content_len = len(content)
+        if content_len == 0:
+            return 0, 1  # backend requires char_start < char_end
+        if evidence:
+            stripped = evidence.strip()
+            if stripped:
+                idx = content.find(stripped)
+                if idx >= 0:
+                    return idx, idx + len(stripped)
+        return 0, content_len
 
     def _find_mention(self, doc_id: str, content: str, value: str) -> Mention:
         start = content.find(value)

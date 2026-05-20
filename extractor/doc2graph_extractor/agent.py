@@ -13,6 +13,15 @@ from duckduckgo_search import DDGS
 from pydantic import BaseModel, Field
 from tenacity import retry, stop_after_attempt, wait_exponential
 
+try:
+    from google import genai as google_genai
+    from google.genai import types as google_genai_types
+    GOOGLE_GENAI_AVAILABLE = True
+except ImportError:
+    google_genai = None
+    google_genai_types = None
+    GOOGLE_GENAI_AVAILABLE = False
+
 from .prompts import (
     CROSS_DOCUMENT_FUSION_SYSTEM_PROMPT,
     EXTRACTION_SYSTEM_PROMPT,
@@ -636,42 +645,88 @@ class ExtractionAgent:
         model: str | None = None,
         max_tokens: int | None = None,
         temperature: float | None = None,
+        provider: str | None = None,
     ):
         """
         Initialize the extraction agent.
 
-        Args:
-            api_key: Anthropic API key (defaults to ANTHROPIC_API_KEY env var)
-            model: Claude model to use (defaults to CLAUDE_MODEL env var)
-            max_tokens: Maximum tokens for response (defaults to MAX_TOKENS env var or 8192)
-            temperature: Temperature for generation (defaults to TEMPERATURE env var or 0.0)
+        Provider is selected via the LLM_PROVIDER env var (or the `provider` kwarg):
+          - "anthropic" (default): uses Anthropic Claude; honors ANTHROPIC_API_KEY and CLAUDE_MODEL
+          - "google":              uses Google Gemini;   honors GOOGLE_API_KEY    and GEMINI_MODEL
         """
-        self.api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
-        if not self.api_key:
-            raise ValueError(
-                "ANTHROPIC_API_KEY environment variable must be set or api_key must be provided"
-            )
-
-        self.model = model or os.getenv("CLAUDE_MODEL", "claude-3-haiku-20240307")
+        self.provider = (provider or os.getenv("LLM_PROVIDER", "anthropic")).lower()
         self.max_tokens = max_tokens or int(os.getenv("MAX_TOKENS", "8192"))
-        self.temperature = temperature or float(os.getenv("TEMPERATURE", "0.0"))
+        self.temperature = temperature if temperature is not None else float(os.getenv("TEMPERATURE", "0.0"))
 
-        # Configure proxy support from environment variables
-        http_proxy = os.getenv("http_proxy") or os.getenv("HTTP_PROXY")
-        https_proxy = os.getenv("https_proxy") or os.getenv("HTTPS_PROXY")
+        if self.provider == "anthropic":
+            self.api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
+            if not self.api_key:
+                raise ValueError("ANTHROPIC_API_KEY must be set when LLM_PROVIDER=anthropic")
+            self.model = model or os.getenv("CLAUDE_MODEL", "claude-3-haiku-20240307")
 
-        if http_proxy or https_proxy:
-            proxy = https_proxy or http_proxy
-            http_client = httpx.Client(proxy=proxy)
-            self.client = Anthropic(api_key=self.api_key, http_client=http_client)
+            http_proxy = os.getenv("http_proxy") or os.getenv("HTTP_PROXY")
+            https_proxy = os.getenv("https_proxy") or os.getenv("HTTPS_PROXY")
+            if http_proxy or https_proxy:
+                proxy = https_proxy or http_proxy
+                http_client = httpx.Client(proxy=proxy)
+                self.client = Anthropic(api_key=self.api_key, http_client=http_client)
+            else:
+                self.client = Anthropic(api_key=self.api_key)
+
+        elif self.provider == "google":
+            if not GOOGLE_GENAI_AVAILABLE:
+                raise ValueError(
+                    "LLM_PROVIDER=google requires the google-genai package. "
+                    "Install with: pip install google-genai"
+                )
+            self.api_key = api_key or os.getenv("GOOGLE_API_KEY")
+            if not self.api_key:
+                raise ValueError("GOOGLE_API_KEY must be set when LLM_PROVIDER=google")
+            self.api_key = self.api_key.strip()
+            self.model = model or os.getenv("GEMINI_MODEL", "gemini-3.1-flash")
+            self.client = google_genai.Client(api_key=self.api_key)
+
         else:
-            self.client = Anthropic(api_key=self.api_key)
+            raise ValueError(
+                f"Unknown LLM_PROVIDER {self.provider!r}; expected 'anthropic' or 'google'"
+            )
 
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=10),
         reraise=True,
     )
+    def _call_llm(self, user_prompt: str, document_content: str | None = None) -> str:
+        """Dispatch to the configured provider."""
+        if self.provider == "google":
+            return self._call_gemini(user_prompt, document_content)
+        return self._call_claude(user_prompt, document_content)
+
+    def _call_gemini(self, user_prompt: str, document_content: str | None = None) -> str:
+        """Call Google Gemini via google-genai SDK."""
+        if document_content:
+            prompt = (
+                f"{user_prompt}\n\n--- DOCUMENT START ---\n{document_content}\n--- DOCUMENT END ---"
+            )
+        else:
+            prompt = user_prompt
+
+        # Disable "thinking" reasoning tokens so the full max_output_tokens budget
+        # goes to the JSON response (Gemini 2.5+ otherwise burns budget on reasoning).
+        config = google_genai_types.GenerateContentConfig(
+            system_instruction=EXTRACTION_SYSTEM_PROMPT,
+            temperature=self.temperature,
+            max_output_tokens=self.max_tokens,
+            response_mime_type="application/json",
+            thinking_config=google_genai_types.ThinkingConfig(thinking_budget=0),
+        )
+        response = self.client.models.generate_content(
+            model=self.model,
+            contents=prompt,
+            config=config,
+        )
+        return response.text or ""
+
     def _call_claude(self, user_prompt: str, document_content: str | None = None) -> str:
         """
         Call Claude API with retry logic.
@@ -824,8 +879,8 @@ class ExtractionAgent:
         # Build the extraction prompt
         user_prompt = build_extraction_prompt(document)
 
-        # Call Claude
-        response_text = self._call_claude(user_prompt)
+        # Call the configured LLM (Anthropic or Google)
+        response_text = self._call_llm(user_prompt)
 
         # Parse response
         extraction_response = self._parse_extraction_response(response_text)
