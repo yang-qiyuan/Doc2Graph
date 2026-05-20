@@ -1,7 +1,6 @@
 package graph
 
 import (
-	"context"
 	"fmt"
 
 	"doc2graph/backend/internal/domain"
@@ -9,43 +8,18 @@ import (
 )
 
 type Service struct {
-	memStore   *store.MemoryStore
-	neo4jStore *store.Neo4jStore
+	memStore *store.MemoryStore
 }
 
-func NewService(neo4jStore *store.Neo4jStore) *Service {
-	// For backward compatibility, we'll fallback to memStore for certain operations
-	// In a future version, all operations should use Neo4j
-	return &Service{
-		neo4jStore: neo4jStore,
-	}
-}
-
-func (s *Service) SetMemoryStore(memStore *store.MemoryStore) {
-	s.memStore = memStore
+func NewService(memStore *store.MemoryStore) *Service {
+	return &Service{memStore: memStore}
 }
 
 func (s *Service) GetGraph(jobID string, expandMetadata bool) (domain.GraphResponse, error) {
-	ctx := context.Background()
-	graphData, err := s.neo4jStore.GetGraphForJob(ctx, jobID)
-	if err != nil {
-		return domain.GraphResponse{}, fmt.Errorf("failed to get graph from Neo4j: %w", err)
+	result, ok := s.memStore.GetJobResult(jobID)
+	if !ok {
+		return domain.GraphResponse{}, fmt.Errorf("job result not found")
 	}
-
-	// Fetch documents from memory store for isPrimaryEntity check
-	// Documents are needed to determine which Person entities are "primary" (document subjects)
-	var documents []domain.ExportDocument
-	if memResult, ok := s.memStore.GetJobResult(jobID); ok {
-		documents = memResult.Documents
-	}
-
-	// Convert GraphData to ExtractionResult for compatibility with buildDisplayGraph
-	result := domain.ExtractionResult{
-		Documents: documents,
-		Entities:  graphData.Entities,
-		Relations: graphData.Relations,
-	}
-
 	return buildDisplayGraph(result, expandMetadata), nil
 }
 

@@ -9,20 +9,15 @@ import (
 
 type App struct {
 	store        *store.MemoryStore
-	neo4jStore   *store.Neo4jStore
 	jobService   *jobs.Service
 	graphService *graph.Service
 }
 
-func NewApp(neo4jStore *store.Neo4jStore) *App {
+func NewApp() *App {
 	memStore := store.NewMemoryStore()
-	graphService := graph.NewService(neo4jStore)
-	graphService.SetMemoryStore(memStore)
-
 	return &App{
 		store:        memStore,
-		neo4jStore:   neo4jStore,
-		jobService:   jobs.NewService(memStore, neo4jStore, extractor.NewPythonRunner()),
-		graphService: graphService,
+		jobService:   jobs.NewService(memStore, extractor.NewPythonRunner()),
+		graphService: graph.NewService(memStore),
 	}
 }

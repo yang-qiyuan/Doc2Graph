@@ -20,15 +20,9 @@ func (s stubRunner) Run(_ context.Context, _ []domain.Document) (domain.Extracti
 
 func newTestApp(result domain.ExtractionResult) *App {
 	memStore := store.NewMemoryStore()
-	// For tests, we don't need actual Neo4j connectivity, so we pass nil
-	// The test will use the stubRunner to bypass actual extraction
-	graphService := graph.NewService(nil)
-	graphService.SetMemoryStore(memStore)
-
 	return &App{
 		store:        memStore,
-		neo4jStore:   nil,
-		jobService:   jobs.NewService(memStore, nil, stubRunner{result: result}),
-		graphService: graphService,
+		jobService:   jobs.NewService(memStore, stubRunner{result: result}),
+		graphService: graph.NewService(memStore),
 	}
 }
